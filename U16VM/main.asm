@@ -14,10 +14,48 @@ model	large
 ;When doing data transfer between data segments, use local ram as buffer. Do not directly transfer between different segments since memory access to a different data segment will reload the whole virtual memory segment from external storage.
 ;it's recommended to cache frequently accessed data in local ram segment.
 
+;global variables
+VCSR	EQU	09000h
+VDSR	EQU	09002h
+VLCSR	EQU	09004h
+VLR	EQU	09006h
+VER8	EQU	09008h
+VER10	EQU	0900Ah
+TMP	EQU	0900Ch
+
+;SWI 0 handler
+;raise exceptions
+;in: er0-exception code er2-argument
+_SWI_0:
+	rti
+
+;SWI 1 handler
+;Change current code segment
 ;in: er10-pointer to target virtual address (big endian)
 ;out: er10-low 16 bits of the target virtual address
 _SWI_1:
+	push	ea
+	push	er8
+	push	xr12
 
+	lea	[er10]
+	l	xr8,	[ea]
+	l	er12,	VCSR
+	cmp	er12,	er8
+	beq	swi1_ret
+
+	push	qr0
+	st	er8,	VCSR
+	;calls a function to load the target code segment from external storage to allocated region of the internal ram.
+	mov	er0,	er8
+	bl	reload_code_segment
+	pop	qr0
+	
+swi1_ret:
+	pop	xr12
+	pop	er8
+	pop	ea
+	rti
 
 ;example for a virtual instruction handler:
 _nop:
@@ -55,12 +93,14 @@ _b:
 
 _bl:
 	mov	er10,	sp
-	st	er10,	VLR
 	mov	sp,	er8
 	mov	r8,	psw
 	push	r8
 	l	er8,	VCSR
 	st	er8,	VLCSR
+	mov	er8,	er10
+	add	er8,	#4
+	st	er8,	VLR
 	pop	psw
 	mov	er8,	sp
 	swi	#1
@@ -105,6 +145,48 @@ _pop_pc:
 	mov	sp,	er10
 	pop	er10
 	b	er10
+
+_pop_lr:
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	er8
+	st	er8,	VLCSR
+	pop	er8
+	st	er8,	VLR
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
+
+_syscall:
+	mov	er10,	sp
+	mov	sp,	er8
+	st	er10,	TMP
+	bl	_do_syscall
+	st	er8,	VER8
+	st	er10,	VER10
+	mov	r8,	psw
+	l	er10,	TMP
+	add	er10,	#4
+	mov	psw,	r8
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
+
+_do_syscall:
+	mov	r8,	psw
+	push	r8
+	l	er8,	[er10]
+	l	er10,	02h[er10]
+	pop	psw
+	push	xr8
+	mov	r8,	psw
+	push	r8
+	l	er8,	VER8
+	l	er10,	VER10
+	pop	psw
+	pop	pc
 
 _push_qr0:
 	mov	er10,	sp
