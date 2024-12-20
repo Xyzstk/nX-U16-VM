@@ -15,10 +15,10 @@ model	large
 ;it's recommended to cache frequently accessed data in local ram segment.
 
 ;global variables
-VCSR	EQU	09000h
-VDSR	EQU	09002h
-VLCSR	EQU	09004h
-VLR	EQU	09006h
+VLR	EQU	09000h
+VLCSR	EQU	09002h
+VCSR	EQU	09004h
+VDSR	EQU	09006h
 VER8	EQU	09008h
 VER10	EQU	0900Ah
 TMP	EQU	0900Ch
@@ -31,30 +31,51 @@ _SWI_0:
 
 ;SWI 1 handler
 ;Change current code segment
-;in: er10-pointer to target virtual address (big endian)
+;in: er10-pointer to target virtual address
 ;out: er10-low 16 bits of the target virtual address
 _SWI_1:
 	push	ea
-	push	er8
-	push	xr12
-
+	push	xr0
 	lea	[er10]
-	l	xr8,	[ea]
-	l	er12,	VCSR
-	cmp	er12,	er8
-	beq	swi1_ret
-
-	push	qr0
-	st	er8,	VCSR
-	;calls a function to load the target code segment from external storage to allocated region of the internal ram.
-	mov	er0,	er8
-	bl	reload_code_segment
-	pop	qr0
-	
-swi1_ret:
-	pop	xr12
-	pop	er8
+	l	xr0,	[ea]
+	mov	er10,	er0
+	l	er0,	VCSR
+	cmp	er2,	er0
+	bne	do_csr_switch
+	pop	xr0
 	pop	ea
+	rti
+
+do_csr_switch:
+	st	er2,	VCSR
+	;calls a function to load the target code segment from external storage to allocated region of the internal ram.
+	mov	er0,	er2
+	bl	reload_code_segment
+	pop	xr0
+	pop	ea
+	rti
+
+;SWI 2 handler
+;Change current data segment
+;in: er8-target data segment
+_SWI_2:
+	push	er0
+	l	er0,	VDSR
+	cmp	er8,	er0
+	bne	do_dsr_switch
+	pop	er0
+	rti
+
+do_dsr_switch:
+	push	ea
+	push	er2
+	st	er8,	VDSR
+	;calls a function to load the target data segment from external storage.
+	mov	er0,	er8
+	bl	reload_data_segment
+	pop	er2
+	pop	ea
+	pop	er0
 	rti
 
 ;example for a virtual instruction handler:
@@ -108,11 +129,24 @@ _bl:
 	pop	er10
 	b	er10
 
+_bl_er0:
+	mov	er10,	sp
+	st	er10,	VLR
+	mov	sp,	er8
+	mov	r8,	psw
+	l	er10,	VCSR
+	st	er10,	VLCSR
+	mov	psw,	r8
+	mov	er8,	sp
+	mov	sp,	er0
+	pop	er10
+	b	er10
+
 _rt:
 	mov	sp,	er8
 	mov	r8,	psw
-	mov	r10,	#byte1 VLCSR
-	mov	r11,	#byte2 VLCSR
+	mov	r10,	#byte1 VLR
+	mov	r11,	#byte2 VLR
 	mov	psw,	r8
 	mov	er8,	sp
 	swi	#1
@@ -125,9 +159,9 @@ _push_lr:
 	st	er10,	TMP
 	mov	sp,	er8
 	mov	r8,	psw
-	l	er10,	VLR
-	push	er10
 	l	er10,	VLCSR
+	push	er10
+	l	er10,	VLR
 	push	er10
 	l	er10,	TMP
 	mov	psw,	r8
@@ -150,9 +184,9 @@ _pop_lr:
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	er8
-	st	er8,	VLCSR
-	pop	er8
 	st	er8,	VLR
+	pop	er8
+	st	er8,	VLCSR
 	mov	er8,	sp
 	mov	sp,	er10
 	pop	er10
@@ -187,6 +221,31 @@ _do_syscall:
 	l	er10,	VER10
 	pop	psw
 	pop	pc
+
+_mov_dsr_er0:
+	mov	er10,	sp
+	mov	sp,	er8
+	push	er0
+	pop	er8
+	swi	#2
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
+
+_mov_dsr_imm16:
+	mov	er10,	sp
+	mov	sp,	er8
+	mov	r8,	psw
+	push	r8
+	l	er8,	[er10]
+	add	er10,	#2
+	pop	psw
+	swi	#2
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
 
 _push_qr0:
 	mov	er10,	sp
