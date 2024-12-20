@@ -23,11 +23,57 @@ VER8	EQU	09008h
 VER10	EQU	0900Ah
 TMP	EQU	0900Ch
 
+;user-registered exception handler
+;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
+_EXCEPTION_HANDLER	EQU	09010h
+_EXCEPTION_HANDLER_CSR	EQU	09012h
+_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09013h	;boolean value
+
+extrn code	:	reload_code_segment
+extrn code	:	reload_data_segment
+
+;helper function to call a pointer in stack
+__stack_call:
+	pop	pc
+
+;helper function to call native function from virtual machine
+_do_syscall:
+	mov	r8,	psw
+	push	r8
+	l	er8,	[er10]
+	l	er10,	02h[er10]
+	pop	psw
+	push	xr8
+	mov	r8,	psw
+	push	r8
+	l	er8,	VER8
+	l	er10,	VER10
+	pop	psw
+	pop	pc
+
 ;SWI 0 handler
 ;raise exceptions
 ;in: er0-exception code er2-argument
 _SWI_0:
-	rti
+	push	elr,epsw,lr,ea
+	push	qr8
+	push	xr4
+	tb	_USE_CUSTOM_EXCEPTION_HANDLER.0
+	beq	default_handler
+	l	er4,	_EXCEPTION_HANDLER
+	l	r6,	_EXCEPTION_HANDLER_CSR
+	push	r6
+	push	er4
+	bl	__stack_call
+	mov	r0,	r0
+	beq	default_handler
+exception_retn:
+	pop	xr4
+	pop	qr8
+	pop	ea,lr,psw,pc
+
+default_handler:
+	bal	exception_retn
 
 ;SWI 1 handler
 ;Change current code segment
@@ -78,18 +124,28 @@ do_dsr_switch:
 	pop	er0
 	rti
 
+;VM instruction handler segment
+cseg #1 at 00000h
+
 ;example for a virtual instruction handler:
 _nop:
 	pop	er10	;1 cycle. Stack operation doesn't set flags.
 	b	er10	;2 cycles. Minimum extra cycles count possible in each virtual instruction handler is 3. An alternate in SMALL model is using POP PC, which also takes 3 cycles.
 
-_bge:
-	pop	er10	;branch target
-	blt	skip	;binvcond
+;Bcond addr
+bcond_handler macro binvcond
+	local skip
+	pop	er10
+	binvcond	skip
 	mov	sp,	er10
 skip:
 	pop	er10
 	b	er10
+endm
+
+irp binvcond, <blt, bge, ble, bgt, blts, bges, bles, bgts, beq, bne, bov, bnv, bns, bps>
+	bcond_handler binvcond
+endm
 
 ;jump to the same segment
 _bal:
@@ -98,10 +154,28 @@ _bal:
 	pop	er10
 	b	er10
 
-_b_er0:
-	mov	sp,	er0
+;B ERn
+counter set 0
+$ set(_er8)
+irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
+	if counter == 8 || counter == 10
+		mov	sp,	er8
+		mov	r8,	psw
+		$ if(_er8)
+			l	er10,	VER8
+			$ reset(_er8)
+		$ else
+			l	er10,	VER10
+		$ endif
+		mov	psw,	r8
+		mov	er8,	sp
+	endif
+	mov	sp,	ern
 	pop	er10
 	b	er10
+	counter set counter + 2
+endm
+	
 
 ;long jump
 _b:
@@ -129,18 +203,27 @@ _bl:
 	pop	er10
 	b	er10
 
-_bl_er0:
+;BL ERn
+counter set 0
+irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
 	mov	er10,	sp
 	st	er10,	VLR
 	mov	sp,	er8
 	mov	r8,	psw
 	l	er10,	VCSR
 	st	er10,	VLCSR
+	if counter == 8
+		l	er10,	VER8
+	elseif counter == 10
+		l	er10,	VER10
+	endif
 	mov	psw,	r8
 	mov	er8,	sp
-	mov	sp,	er0
+	mov	sp,	ern
 	pop	er10
 	b	er10
+	counter set counter + 2
+endm
 
 _rt:
 	mov	sp,	er8
@@ -208,31 +291,34 @@ _syscall:
 	pop	er10
 	b	er10
 
-_do_syscall:
-	mov	r8,	psw
-	push	r8
-	l	er8,	[er10]
-	l	er10,	02h[er10]
-	pop	psw
-	push	xr8
-	mov	r8,	psw
-	push	r8
-	l	er8,	VER8
-	l	er10,	VER10
-	pop	psw
-	pop	pc
-
-_mov_dsr_er0:
+;VDSR <- ERn
+counter set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	mov	er10,	sp
 	mov	sp,	er8
-	push	er0
-	pop	er8
+	if counter == 8
+		mov	r8,	psw
+		push	r8
+		l	er8,	VER8
+		pop	psw
+	elseif counter == 10
+		mov	r8,	psw
+		push	r8
+		l	er8,	VER10
+		pop	psw
+	else
+		push	ern
+		pop	er8
+	endif
 	swi	#2
 	mov	er8,	sp
 	mov	sp,	er10
 	pop	er10
 	b	er10
+	counter set counter + 2
+endm
 
+;VDSR <- imm16
 _mov_dsr_imm16:
 	mov	er10,	sp
 	mov	sp,	er8
@@ -251,6 +337,23 @@ _push_qr0:
 	mov	er10,	sp
 	mov	sp,	er8
 	push	qr0
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
+
+_push_qr8:
+	mov	er10,	sp
+	mov	sp,	er8
+	st	er10,	TMP
+	mov	r8,	psw
+	push	xr12
+	l	er10,	VER10
+	push	er10
+	l	er10,	VER8
+	push	er10
+	l	er10,	TMP
+	mov	psw,	r8
 	mov	er8,	sp
 	mov	sp,	er10
 	pop	er10
