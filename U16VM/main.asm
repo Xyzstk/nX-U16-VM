@@ -19,6 +19,7 @@ VLR	EQU	09000h
 VLCSR	EQU	09002h
 VCSR	EQU	09004h
 VDSR	EQU	09006h
+VXR8	EQU	09008h
 VER8	EQU	09008h
 VER10	EQU	0900Ah
 TMP	EQU	0900Ch
@@ -127,6 +128,143 @@ do_dsr_switch:
 ;VM instruction handler segment
 cseg #1 at 00000h
 
+;handler for `insn rn, rm` style instructions
+insn_rn_rm macro insn
+	idx0 set 0
+	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx0 >= 8 && idx0 < 12
+			l	r10,	VXR8 + idx0 - 8
+		endif
+		idx1 set 0
+		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+			$ set(unhandled)
+			if idx0 >= 8 && idx0 < 12
+				if idx0 == idx1
+					insn	r10,	r10
+					st	r10,	VXR8 + idx0 - 8
+					$ reset(unhandled)
+				else
+					l	r11,	VXR8 + idx1 - 8
+					insn	r10,	r11
+					st	r10,	VXR8 + idx0 - 8
+					$ reset(unhandled)
+				endif
+			elseif idx1 >= 8 && idx1 < 12
+				l	r10,	VXR8 + idx1 - 8
+			endif
+			$ if(unhandled)
+				insn	rn,	rm
+			$ endif
+			pop	er10
+			b	er10
+			idx1 set idx1 + 1
+		endm
+		idx0 set idx0 + 1
+	endm
+endm
+
+insn_rn_rm_saveflags macro insn
+	idx0 set 0
+	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx0 >= 8 && idx0 < 12
+			mov	r11,	psw
+			l	r10,	VXR8 + idx0 - 8
+		endif
+		idx1 set 0
+		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+			$ set(unhandled)
+			if idx0 >= 8 && idx0 < 12
+				if idx0 == idx1
+					mov	psw,	r11
+					insn	r10,	r10
+					st	r10,	VXR8 + idx0 - 8
+					$ reset(unhandled)
+				else
+					st	er8,	TMP
+					l	r8,	VXR8 + idx1 - 8
+					mov	psw,	r11
+					insn	r10,	r8
+					st	r10,	VXR8 + idx0 - 8
+					mov	r10,	psw
+					l	er8,	TMP
+					mov	psw,	r10
+					$ reset(unhandled)
+				endif
+			elseif idx1 >= 8 && idx1 < 12
+				mov	r11,	psw
+				l	r10,	VXR8 + idx1 - 8
+				mov	psw,	r11
+			endif
+			$ if(unhandled)
+				insn	rn,	rm
+			$ endif
+			pop	er10
+			b	er10
+			idx1 set idx1 + 1
+		endm
+		idx0 set idx0 + 1
+	endm
+endm
+
+;handler for `insn ern, erm` style instructions
+insn_ern_erm macro insn
+	idx0 set 0
+	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		if idx0 >= 8 && idx0 < 12
+			l	er10,	VXR8 + idx0 - 8
+		endif
+		idx1 set 0
+		irp erm, <er0, er2, er4, er6, er10, er10, er12, er14>
+			$ set(unhandled)
+			if idx0 >= 8 && idx0 < 12
+				if idx0 == idx1
+					insn	er10,	er10
+					st	er10,	VXR8 + idx0 - 8
+					$ reset(unhandled)
+				else
+					st	er8,	TMP
+					l	er8,	VXR8 + idx1 - 8
+					insn	er10,	er8
+					st	er10,	VXR8 + idx0 - 8
+					mov	r10,	psw
+					l	er8,	TMP
+					mov	psw,	r10
+					$ reset(unhandled)
+				endif
+			else
+				if idx1 >= 8 && idx1 < 12
+					l	er10,	VXR8 + idx1 - 8
+				endif
+			endif
+			$ if(unhandled)
+				insn	ern,	erm
+			$ endif
+			pop	er10
+			b	er10
+			idx1 set idx1 + 2
+		endm
+		idx0 set idx0 + 2
+	endm
+endm
+
+insn_ern_erm add
+insn_rn_rm add
+insn_rn_rm addc
+insn_rn_rm and
+insn_ern_erm cmp
+insn_rn_rm cmp
+insn_rn_rm cmpc
+insn_rn_rm mov
+insn_rn_rm or
+insn_rn_rm_saveflags sll
+insn_rn_rm_saveflags sllc
+insn_rn_rm_saveflags sra
+insn_rn_rm_saveflags srl
+insn_rn_rm_saveflags srlc
+insn_rn_rm sub
+insn_rn_rm subc
+insn_rn_rm xor
+
 ;example for a virtual instruction handler:
 _nop:
 	pop	er10	;1 cycle. Stack operation doesn't set flags.
@@ -155,25 +293,19 @@ _bal:
 	b	er10
 
 ;B ERn
-counter set 0
-$ set(_er8)
+idx0 set 0
 irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
-	if counter == 8 || counter == 10
+	if idx0 >= 8 && idx0 < 12
 		mov	sp,	er8
 		mov	r8,	psw
-		$ if(_er8)
-			l	er10,	VER8
-			$ reset(_er8)
-		$ else
-			l	er10,	VER10
-		$ endif
+		l	er10,	VXR8 + idx0 - 8
 		mov	psw,	r8
 		mov	er8,	sp
 	endif
 	mov	sp,	ern
 	pop	er10
 	b	er10
-	counter set counter + 2
+	idx0 set idx0 + 2
 endm
 	
 
@@ -204,7 +336,7 @@ _bl:
 	b	er10
 
 ;BL ERn
-counter set 0
+idx0 set 0
 irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
 	mov	er10,	sp
 	st	er10,	VLR
@@ -212,17 +344,15 @@ irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
 	mov	r8,	psw
 	l	er10,	VCSR
 	st	er10,	VLCSR
-	if counter == 8
-		l	er10,	VER8
-	elseif counter == 10
-		l	er10,	VER10
+	if idx0 >= 8 && idx0 < 12
+		l	er10,	VXR8 + idx0 - 8
 	endif
 	mov	psw,	r8
 	mov	er8,	sp
 	mov	sp,	ern
 	pop	er10
 	b	er10
-	counter set counter + 2
+	idx0 set idx0 + 2
 endm
 
 _rt:
@@ -292,19 +422,14 @@ _syscall:
 	b	er10
 
 ;VDSR <- ERn
-counter set 0
+idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	mov	er10,	sp
 	mov	sp,	er8
-	if counter == 8
+	if idx0 >= 8 && idx0 < 12
 		mov	r8,	psw
 		push	r8
-		l	er8,	VER8
-		pop	psw
-	elseif counter == 10
-		mov	r8,	psw
-		push	r8
-		l	er8,	VER10
+		l	er8,	VXR8 + idx0 - 8
 		pop	psw
 	else
 		push	ern
@@ -315,7 +440,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	mov	sp,	er10
 	pop	er10
 	b	er10
-	counter set counter + 2
+	idx0 set idx0 + 2
 endm
 
 ;VDSR <- imm16
