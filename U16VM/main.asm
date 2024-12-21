@@ -117,8 +117,8 @@ do_dsr_switch:
 	push	ea
 	push	er2
 	st	er8,	VDSR
-	;calls a function to load the target data segment from external storage.
-	mov	er0,	er8
+	;calls a function to save and load the target data segment from external storage.
+	mov	er2,	er8
 	bl	reload_data_segment
 	pop	er2
 	pop	ea
@@ -132,23 +132,21 @@ cseg #1 at 00000h
 insn_rn_rm macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
-		if idx0 >= 8 && idx0 < 12
-			l	r10,	VXR8 + idx0 - 8
-		endif
 		idx1 set 0
 		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
+				l	r10,	VXR8 + idx0 - 8
 				if idx0 == idx1
 					insn	r10,	r10
-					st	r10,	VXR8 + idx0 - 8
-					$ reset(unhandled)
-				else
+				elseif idx1 >= 8 && idx1 < 12
 					l	r11,	VXR8 + idx1 - 8
 					insn	r10,	r11
-					st	r10,	VXR8 + idx0 - 8
-					$ reset(unhandled)
+				else
+					insn	r10,	rm
 				endif
+				st	r10,	VXR8 + idx0 - 8
+				$ reset(unhandled)
 			elseif idx1 >= 8 && idx1 < 12
 				l	r10,	VXR8 + idx1 - 8
 			endif
@@ -166,20 +164,17 @@ endm
 insn_rn_rm_saveflags macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
-		if idx0 >= 8 && idx0 < 12
-			mov	r11,	psw
-			l	r10,	VXR8 + idx0 - 8
-		endif
 		idx1 set 0
 		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
+				mov	r11,	psw
+				l	r10,	VXR8 + idx0 - 8
 				if idx0 == idx1
 					mov	psw,	r11
 					insn	r10,	r10
 					st	r10,	VXR8 + idx0 - 8
-					$ reset(unhandled)
-				else
+				elseif idx1 >= 8 && idx1 < 12
 					st	er8,	TMP
 					l	r8,	VXR8 + idx1 - 8
 					mov	psw,	r11
@@ -188,8 +183,12 @@ insn_rn_rm_saveflags macro insn
 					mov	r10,	psw
 					l	er8,	TMP
 					mov	psw,	r10
-					$ reset(unhandled)
+				else
+					mov	psw,	r11
+					insn	r10,	rm
+					st	r10,	VXR8 + idx0 - 8
 				endif
+				$ reset(unhandled)
 			elseif idx1 >= 8 && idx1 < 12
 				mov	r11,	psw
 				l	r10,	VXR8 + idx1 - 8
@@ -210,18 +209,15 @@ endm
 insn_ern_erm macro insn
 	idx0 set 0
 	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
-		if idx0 >= 8 && idx0 < 12
-			l	er10,	VXR8 + idx0 - 8
-		endif
 		idx1 set 0
 		irp erm, <er0, er2, er4, er6, er10, er10, er12, er14>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
+				l	er10,	VXR8 + idx0 - 8
 				if idx0 == idx1
 					insn	er10,	er10
 					st	er10,	VXR8 + idx0 - 8
-					$ reset(unhandled)
-				else
+				elseif idx1 >= 8 && idx1 < 12
 					st	er8,	TMP
 					l	er8,	VXR8 + idx1 - 8
 					insn	er10,	er8
@@ -229,8 +225,11 @@ insn_ern_erm macro insn
 					mov	r10,	psw
 					l	er8,	TMP
 					mov	psw,	r10
-					$ reset(unhandled)
+				else
+					insn	er10,	erm
+					st	er10,	VXR8 + idx0 - 8
 				endif
+				$ reset(unhandled)
 			else
 				if idx1 >= 8 && idx1 < 12
 					l	er10,	VXR8 + idx1 - 8
@@ -254,6 +253,7 @@ insn_rn_rm and
 insn_ern_erm cmp
 insn_rn_rm cmp
 insn_rn_rm cmpc
+insn_ern_erm mov
 insn_rn_rm mov
 insn_rn_rm or
 insn_rn_rm_saveflags sll
@@ -264,6 +264,285 @@ insn_rn_rm_saveflags srlc
 insn_rn_rm sub
 insn_rn_rm subc
 insn_rn_rm xor
+
+;DIV ERn, Rm
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx1 set 0
+	irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx0 >= 8 && idx0 < 12
+			st	er8,	TMP
+			mov	r11,	psw
+			l	er8,	VXR8 + idx0 - 8
+			if idx0 == idx1
+				mov	psw,	r11
+				div	er8,	r8
+			elseif idx0 == idx1 - 1
+				mov	psw,	r11
+				div	er8,	r9
+			elseif idx1 >= 8 && idx1 < 12
+				l	r10,	VXR8 + idx1 - 8
+				mov	psw,	r11
+				div	er8,	r10
+				st	r10,	VXR8 + idx1 - 8
+			else
+				mov	psw,	r11
+				div	er8,	rm
+			endif
+			st	er8,	VXR8 + idx0 - 8
+			mov	r11,	psw
+			l	er8,	TMP
+			mov	psw,	r11
+		elseif idx1 >= 8 && idx1 < 12
+			mov	r11,	psw
+			l	r10,	VXR8 + idx1 - 8
+			mov	psw,	r11
+			div	ern,	r10
+			st	r10,	VXR8 + idx1 - 8
+		else
+			div	ern,	rm
+		endif
+		pop	er10
+		b	er10
+		idx1 set idx1 + 1
+	endm
+	idx0 set idx0 + 2
+endm
+
+;MUL ERn, Rm
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx1 set 0
+	irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+		$ set(unhandled)
+		if idx0 >= 8 && idx0 < 12
+			mov	r11,	psw
+			l	r10,	VXR8 + idx0 - 8
+			if idx0 == idx1
+				mov	psw,	r11
+				mul	er10,	r10
+				st	er10,	VXR8 + idx0 - 8
+			elseif idx1 >= 8 && idx1 < 12
+				st	er8,	TMP
+				l	r8,	VXR8 + idx1 - 8
+				mov	psw,	r11
+				mul	er10,	r8
+				st	er10,	VXR8 + idx0 - 8
+				mov	r10,	psw
+				l	er8,	TMP
+				mov	psw,	r10
+			else
+				mov	psw,	r11
+				mul	er10,	rm
+				st	er10,	VXR8 + idx0 - 8
+			endif
+			$ reset(unhandled)
+		elseif idx1 >= 8 && idx1 < 12
+			mov	r11,	psw
+			l	r10,	VXR8 + idx1 - 8
+			mov	psw,	r11
+		endif
+		$ if(unhandled)
+			mul	ern,	rm
+		$ endif
+		pop	er10
+		b	er10
+		idx1 set idx1 + 1
+	endm
+	idx0 set idx0 + 2
+endm
+
+;ST Rn, [ERm]
+; idx1 set 0
+; irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+; 	idx0 set 0
+; 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+; 		if idx1 >= 8 && idx1 < 12
+; 			st	er8,	TMP
+; 			mov	r11,	psw
+; 			l	er8,	VXR8 + idx1 - 8
+; 			if idx0 == idx1
+; 				st	r8,	[er8]
+; 			elseif idx0 == idx1 - 1
+; 				st	r9,	[er8]
+; 			else
+; 				l	r10,	VXR8 + idx0 - 8
+; 				st	r10,	[er8]
+; 			endif
+; 			l	er8,	TMP
+; 			mov	psw,	r11
+; 		elseif idx0 >= 8 && idx0 < 12
+; 			mov	r11,	psw
+; 			l	r10,	VXR8 + idx0 - 8
+; 			mov	psw,	r11
+; 			st	r10,	[erm]
+; 		else
+; 			st	rn,	[erm]
+; 		endif
+; 		pop	er10
+; 		b	er10
+; 		idx0 set idx0 + 1
+; 	endm
+; 	idx1 set idx1 + 2
+; endm
+
+;ST Rn, Disp16[ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx0 set 0
+	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx1 >= 8 && idx1 < 12
+			mov	r10,	psw
+			st	r10,	TMP + 2
+			st	er8,	TMP
+			pop	er10
+			l	er8,	VXR8 + idx1 - 8
+			add	er10,	er8
+			if idx0 == idx1
+				st	r8,	[er10]
+			elseif idx0 == idx1 - 1
+				st	r9,	[er10]
+			elseif idx0 >= 8 && idx0 < 12
+				l	r8,	VXR8 + idx0 - 8
+				st	r8,	[er10]
+			else
+				st	rn,	[er10]
+			endif
+			l	r10,	TMP + 2
+		else
+			st	er8,	TMP
+			pop	er8
+			mov	r10,	psw
+			add	er8,	erm
+			if idx0 >= 8 && idx0 < 12
+				l	r11,	VXR8 + idx0 - 8
+				st	r11,	[er8]
+			else
+				st	rn,	[er8]
+			endif
+		endif
+		l	er8,	TMP
+		mov	psw,	r10
+		pop	er10
+		b	er10
+		idx0 set idx0 + 1
+	endm
+	idx1 set idx1 + 2
+endm
+
+;ST ERn, Disp16[ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx0 set 0
+	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		if idx1 >= 8 && idx1 < 12
+			mov	r10,	psw
+			st	r10,	TMP + 2
+			st	er8,	TMP
+			pop	er10
+			l	er8,	VXR8 + idx1 - 8
+			add	er10,	er8
+			if idx0 == idx1
+				st	er8,	[er10]
+			elseif idx0 >= 8 && idx0 < 12
+				l	er8,	VXR8 + idx0 - 8
+				st	er8,	[er10]
+			else
+				st	ern,	[er10]
+			endif
+			l	r10,	TMP + 2
+		elseif idx0 >= 8 && idx0 < 12
+			mov	r10,	psw
+			st	r10,	TMP + 2
+			st	er8,	TMP
+			pop	er10
+			add	er10,	erm
+			l	er8,	VXR8 + idx0 - 8
+			st	er8,	[er10]
+			l	r10,	TMP + 2
+		else
+			st	er8,	TMP
+			pop	er8
+			mov	r10,	psw
+			add	er8,	erm
+			st	ern,	[er8]
+		endif
+		l	er8,	TMP
+		mov	psw,	r10
+		pop	er10
+		b	er10
+		idx0 set idx0 + 2
+	endm
+	idx1 set idx1 + 2
+endm
+
+;L Rn, Disp16[ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx0 set 0
+	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx1 >= 8 && idx1 < 12
+			st	er8,	TMP
+			mov	r8,	psw
+			st	r8,	TMP + 2
+			pop	er10
+			l	er8,	VXR8 + idx1 - 8
+			add	er10,	er8
+			l	r8,	TMP + 2
+		else
+			pop	er10
+			st	er8,	TMP
+			mov	r8,	psw
+			add	er10,	erm
+		endif
+		mov	psw,	r8
+		l	er8,	TMP
+		if idx0 >= 8 && idx0 < 12
+			l	r10,	[er10]
+			st	r10,	VXR8 + idx0 - 8
+		else
+			l	rn,	[er10]
+		endif
+		pop	er10
+		b	er10
+		idx0 set idx0 + 1
+	endm
+	idx1 set idx1 + 2
+endm
+
+;L ERn, Disp16[ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx0 set 0
+	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		if idx1 >= 8 && idx1 < 12
+			st	er8,	TMP
+			mov	r8,	psw
+			st	r8,	TMP + 2
+			pop	er10
+			l	er8,	VXR8 + idx1 - 8
+			add	er10,	er8
+			l	r8,	TMP + 2
+		else
+			pop	er10
+			st	er8,	TMP
+			mov	r8,	psw
+			add	er10,	erm
+		endif
+		mov	psw,	r8
+		l	er8,	TMP
+		if idx0 >= 8 && idx0 < 12
+			l	er10,	[er10]
+			st	er10,	VXR8 + idx0 - 8
+		else
+			l	ern,	[er10]
+		endif
+		pop	er10
+		b	er10
+		idx0 set idx0 + 2
+	endm
+	idx1 set idx1 + 2
+endm
 
 ;example for a virtual instruction handler:
 _nop:
