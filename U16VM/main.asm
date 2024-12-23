@@ -3,9 +3,9 @@ model	large
 
 ;U16 Virtual Machine for running external code
 ;General design:
-;Virtual Instruction Pointer: SP	Virtual Stack Pointer: ER8	Working Register: ER10 (generally xr8 is less accessed than xr12 since they are used for stack addressing, or xr0 since they are used for passing arguments.)
+;Virtual Instruction Pointer: SP	Working Register: XR8 (generally xr8 is less accessed than xr12 since they are used for stack addressing, or xr0 since they are used for passing arguments.)
 ;using 16-bit code segment register and data segment register (for virtual memory accessing)
-;emulate VCSR, VDSR, VLCSR, VLR, VXR8 in internal ram
+;emulate VCSR, VDSR, VLCSR, VLR, VXR8 and VSP in internal ram
 ;separate internal ram into code segment, virtual memory segment, local ram segment and stack segment.
 ;use 32-bit virtual ram pointer, where low 16 bits represents the physical address in the virtual memory segment of the internal ram. Virtual memory access should be prefixed to identify data segment. Local ram accessing should not be prefixed since segment switching is handled in prefix.
 ;use 32-bit instruction pointer, where low 16 bits point to the physical address in the code segment of the internal ram. Conditional branch and register calls only allows jumping to the same segment. Use long jump to switch segment.
@@ -14,15 +14,21 @@ model	large
 ;When doing data transfer between data segments, use local ram as buffer. Do not directly transfer between different segments since memory access to a different data segment will reload the whole virtual memory segment from external storage.
 ;it's recommended to cache frequently accessed data in local ram segment.
 
-;global variables
+;virtual registers
 VLR	EQU	09000h
 VLCSR	EQU	09002h
 VCSR	EQU	09004h
 VDSR	EQU	09006h
-VXR8	EQU	09008h
-VER8	EQU	09008h
-VER10	EQU	0900Ah
-TMP	EQU	0900Ch
+VSP	EQU	09008h
+VXR8	EQU	0900Ah
+VER8	EQU	0900Ah
+VER10	EQU	0900Ch
+
+;PSW backup
+_PSW	EQU	0900Eh
+
+;A flag to identify if the cpu is running in virtualized mode
+VM_RUNNING	EQU	0900Fh
 
 ;user-registered exception handler
 ;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
@@ -35,21 +41,6 @@ extrn code	:	reload_data_segment
 
 ;helper function to call a pointer in stack
 __stack_call:
-	pop	pc
-
-;helper function to call native function from virtual machine
-_do_syscall:
-	mov	r8,	psw
-	push	r8
-	l	er8,	[er10]
-	l	er10,	02h[er10]
-	pop	psw
-	push	xr8
-	mov	r8,	psw
-	push	r8
-	l	er8,	VER8
-	l	er10,	VER10
-	pop	psw
 	pop	pc
 
 ;SWI 0 handler
@@ -136,16 +127,29 @@ insn_rn_rm macro insn
 		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
-				l	r10,	VXR8 + idx0 - 8
 				if idx0 == idx1
+					l	r10,	VXR8 + idx0 - 8
 					insn	r10,	r10
+					st	r10,	VXR8 + idx0 - 8
+				elseif (idx0 & 0Fh) == (idx1 & 0Fh)
+					l	er10,	VXR8 + (idx0 & 0Fh) - 8
+					if idx0 < idx1
+						insn	r10,	r11
+						st	r10,	VXR8 + idx0 - 8
+					else
+						insn	r11,	r10
+						st	r11,	VXR8 + idx0 - 8
+					endif
 				elseif idx1 >= 8 && idx1 < 12
+					l	r10,	VXR8 + idx0 - 8
 					l	r11,	VXR8 + idx1 - 8
 					insn	r10,	r11
+					st	r10,	VXR8 + idx0 - 8
 				else
+					l	r10,	VXR8 + idx0 - 8
 					insn	r10,	rm
+					st	r10,	VXR8 + idx0 - 8
 				endif
-				st	r10,	VXR8 + idx0 - 8
 				$ reset(unhandled)
 			elseif idx1 >= 8 && idx1 < 12
 				l	r10,	VXR8 + idx1 - 8
@@ -168,23 +172,31 @@ insn_rn_rm_saveflags macro insn
 		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
-				mov	r11,	psw
-				l	r10,	VXR8 + idx0 - 8
+				mov	r8,	psw
 				if idx0 == idx1
-					mov	psw,	r11
+					l	r10,	VXR8 + idx0 - 8
+					mov	psw,	r8
 					insn	r10,	r10
 					st	r10,	VXR8 + idx0 - 8
+				elseif (idx0 & 0Fh) == (idx1 & 0Fh)
+					l	er10,	VXR8 + (idx0 & 0Fh) - 8
+					mov	psw,	r8
+					if idx0 < idx1
+						insn	r10,	r11
+						st	r10,	VXR8 + idx0 - 8
+					else
+						insn	r11,	r10
+						st	r11,	VXR8 + idx0 - 8
+					endif
 				elseif idx1 >= 8 && idx1 < 12
-					st	er8,	TMP
-					l	r8,	VXR8 + idx1 - 8
-					mov	psw,	r11
-					insn	r10,	r8
+					l	r10,	VXR8 + idx0 - 8
+					l	r11,	VXR8 + idx1 - 8
+					mov	psw,	r8
+					insn	r10,	r11
 					st	r10,	VXR8 + idx0 - 8
-					mov	r10,	psw
-					l	er8,	TMP
-					mov	psw,	r10
 				else
-					mov	psw,	r11
+					l	r10,	VXR8 + idx0 - 8
+					mov	psw,	r8
 					insn	r10,	rm
 					st	r10,	VXR8 + idx0 - 8
 				endif
@@ -218,13 +230,9 @@ insn_ern_erm macro insn
 					insn	er10,	er10
 					st	er10,	VXR8 + idx0 - 8
 				elseif idx1 >= 8 && idx1 < 12
-					st	er8,	TMP
 					l	er8,	VXR8 + idx1 - 8
 					insn	er10,	er8
 					st	er10,	VXR8 + idx0 - 8
-					mov	r10,	psw
-					l	er8,	TMP
-					mov	psw,	r10
 				else
 					insn	er10,	erm
 					st	er10,	VXR8 + idx0 - 8
@@ -354,13 +362,9 @@ idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	pop	er10
 	if idx0 >= 8 && idx0 < 12
-		st	er8,	TMP
 		l	er8,	VXR8 + idx0 - 8
 		add	er8,	er10
 		st	er8,	VXR8 + idx0 - 8
-		mov	r10,	psw
-		l	er8,	TMP
-		mov	psw,	r10
 	else
 		add	ern,	er10
 	endif
@@ -371,12 +375,14 @@ endm
 
 ;ADD SP, #imm16
 _add_sp_imm:
-	mov	r10,	psw
-	st	r10,	TMP
+	mov	r8,	psw
+	st	r8,	_PSW
 	pop	er10
+	l	er8,	VSP
 	add	er8,	er10
-	l	r10,	TMP
-	mov	psw,	r10
+	st	er8,	VSP
+	l	r8,	_PSW
+	mov	psw,	r8
 	pop	er10
 	b	er10
 
@@ -413,7 +419,6 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx1 set 0
 	irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		if idx0 >= 8 && idx0 < 12
-			st	er8,	TMP
 			mov	r11,	psw
 			l	er8,	VXR8 + idx0 - 8
 			if idx0 == idx1
@@ -432,9 +437,6 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 				div	er8,	rm
 			endif
 			st	er8,	VXR8 + idx0 - 8
-			mov	r11,	psw
-			l	er8,	TMP
-			mov	psw,	r11
 		elseif idx1 >= 8 && idx1 < 12
 			mov	r11,	psw
 			l	r10,	VXR8 + idx1 - 8
@@ -459,24 +461,27 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 		$ set(unhandled)
 		if idx0 >= 8 && idx0 < 12
 			mov	r11,	psw
-			l	r10,	VXR8 + idx0 - 8
 			if idx0 == idx1
+				l	r8,	VXR8 + idx0 - 8
 				mov	psw,	r11
-				mul	er10,	r10
-				st	er10,	VXR8 + idx0 - 8
+				mul	er8,	r8
+				st	er8,	VXR8 + idx0 - 8
+			elseif idx0 == idx1 - 1
+				l	er8,	VXR8 + idx0 - 8
+				mov	psw,	r11
+				mul	er8,	r9
+				st	er8,	VXR8 + idx0 - 8
 			elseif idx1 >= 8 && idx1 < 12
-				st	er8,	TMP
-				l	r8,	VXR8 + idx1 - 8
+				l	r8,	VXR8 + idx0 - 8
+				l	r10,	VXR8 + idx1 - 8
 				mov	psw,	r11
-				mul	er10,	r8
-				st	er10,	VXR8 + idx0 - 8
-				mov	r10,	psw
-				l	er8,	TMP
-				mov	psw,	r10
+				mul	er8,	r10
+				st	er8,	VXR8 + idx0 - 8
 			else
+				l	r8,	VXR8 + idx0 - 8
 				mov	psw,	r11
-				mul	er10,	rm
-				st	er10,	VXR8 + idx0 - 8
+				mul	er8,	rm
+				st	er8,	VXR8 + idx0 - 8
 			endif
 			$ reset(unhandled)
 		elseif idx1 >= 8 && idx1 < 12
@@ -505,10 +510,8 @@ idx0 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
 		mov	r10,	psw
-		st	r10,	TMP
-		l	er10,	VXR8 + idx0 - 8
-		lea	[er10]
-		l	r10,	TMP
+		l	er8,	VXR8 + idx0 - 8
+		lea	[er8]
 		mov	psw,	r10
 	else
 		lea	[erm]
@@ -521,21 +524,19 @@ endm
 ;LEA Disp16[ERm]
 idx0 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
-	mov	r10,	psw
-	st	r10,	TMP
+	mov	r8,	psw
 	pop	er10
 	if idx0 >= 8 && idx0 < 12
-		st	er8,	TMP + 2
+		st	r8,	_PSW
 		l	er8,	VXR8 + idx0 - 8
 		add	er10,	er8
 		lea	[er10]
-		l	er8,	TMP + 2
+		l	r8,	_PSW
 	else
 		add	er10,	erm
 		lea	[er10]
 	endif
-	l	r10,	TMP
-	mov	psw,	r10
+	mov	psw,	r8
 	pop	er10
 	b	er10
 	idx0 set idx0 + 2
@@ -543,13 +544,14 @@ endm
 
 ;MOV ERn, #imm16
 idx0 set 0
-irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 	if idx0 >= 8 && idx0 < 12
-		pop	er10
-		st	er10,	VXR8 + idx0 - 8
+		pop	er8
+		st	er8,	VXR8 + idx0 - 8
 	else
 		pop	ern
 	endif
+	mov	ern,	ern
 	pop	er10
 	b	er10
 	idx0 set idx0 + 2
@@ -557,13 +559,14 @@ endm
 
 ;MOV Rn, #imm8
 idx0 set 0
-irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
 	if idx0 >= 8 && idx0 < 12
-		pop	r10
-		st	r10,	VXR8 + idx0 - 8
+		pop	r8
+		st	r8,	VXR8 + idx0 - 8
 	else
 		pop	rn
 	endif
+	mov	rn,	rn
 	pop	er10
 	b	er10
 	idx0 set idx0 + 1
@@ -588,16 +591,12 @@ irp insn, <rb, sb>
 	;RB Dbitadr
 	;SB Dbitadr
 	irp bitidx, <0, 1, 2, 3, 4, 5, 6, 7>
-		st	er8,	TMP
 		pop	er8
 		mov	r11,	psw
 		l	r10,	[er8]
 		mov	psw,	r11
 		insn	r10.bitidx
 		st	r10,	[er8]
-		mov	r11,	psw
-		l	er8,	TMP
-		mov	psw,	r11
 		pop	er10
 		b	er10
 	endm
@@ -625,11 +624,9 @@ endm
 
 ;TB Dbitadr
 irp bitidx, <0, 1, 2, 3, 4, 5, 6, 7>
-	st	er8,	TMP
 	pop	er8
 	mov	r11,	psw
 	l	r10,	[er8]
-	l	er8,	TMP
 	mov	psw,	r11
 	tb	r10.bitidx
 	pop	er10
@@ -694,9 +691,8 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		if idx1 >= 8 && idx1 < 12
-			mov	r10,	psw
-			st	r10,	TMP + 2
-			st	er8,	TMP
+			mov	r8,	psw
+			st	r8,	_PSW
 			pop	er10
 			l	er8,	VXR8 + idx1 - 8
 			add	er10,	er8
@@ -710,21 +706,19 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 			else
 				st	rn,	[er10]
 			endif
-			l	r10,	TMP + 2
+			l	r8,	_PSW
 		else
-			st	er8,	TMP
-			pop	er8
-			mov	r10,	psw
-			add	er8,	erm
+			pop	er10
+			mov	r8,	psw
+			add	er10,	erm
 			if idx0 >= 8 && idx0 < 12
-				l	r11,	VXR8 + idx0 - 8
-				st	r11,	[er8]
+				l	r9,	VXR8 + idx0 - 8
+				st	r9,	[er10]
 			else
-				st	rn,	[er8]
+				st	rn,	[er10]
 			endif
 		endif
-		l	er8,	TMP
-		mov	psw,	r10
+		mov	psw,	r8
 		pop	er10
 		b	er10
 		idx0 set idx0 + 1
@@ -737,10 +731,9 @@ idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		mov	r8,	psw
 		if idx1 >= 8 && idx1 < 12
-			mov	r10,	psw
-			st	r10,	TMP + 2
-			st	er8,	TMP
+			st	r8,	_PSW
 			pop	er10
 			l	er8,	VXR8 + idx1 - 8
 			add	er10,	er8
@@ -752,25 +745,20 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 			else
 				st	ern,	[er10]
 			endif
-			l	r10,	TMP + 2
+			l	r8,	_PSW
 		elseif idx0 >= 8 && idx0 < 12
-			mov	r10,	psw
-			st	r10,	TMP + 2
-			st	er8,	TMP
+			st	r8,	_PSW
 			pop	er10
 			add	er10,	erm
 			l	er8,	VXR8 + idx0 - 8
 			st	er8,	[er10]
-			l	r10,	TMP + 2
+			l	r8,	_PSW
 		else
-			st	er8,	TMP
-			pop	er8
-			mov	r10,	psw
-			add	er8,	erm
-			st	ern,	[er8]
+			pop	er10
+			add	er10,	erm
+			st	ern,	[er10]
 		endif
-		l	er8,	TMP
-		mov	psw,	r10
+		mov	psw,	r8
 		pop	er10
 		b	er10
 		idx0 set idx0 + 2
@@ -815,10 +803,8 @@ idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
 		mov	r10,	psw
-		st	r10,	TMP
-		l	er10,	VXR8 + idx0 - 8
-		st	er10,	[ea]
-		l	r10,	TMP
+		l	er8,	VXR8 + idx0 - 8
+		st	er8,	[ea]
 		mov	psw,	r10
 	else
 		st	ern,	[ea]
@@ -833,10 +819,8 @@ idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
 		mov	r10,	psw
-		st	r10,	TMP
-		l	er10,	VXR8 + idx0 - 8
-		st	er10,	[ea+]
-		l	r10,	TMP
+		l	er8,	VXR8 + idx0 - 8
+		st	er8,	[ea+]
 		mov	psw,	r10
 	else
 		st	ern,	[ea+]
@@ -851,12 +835,10 @@ idx0 set 0
 irp xrn, <xr0, xr4, xr8, xr12>
 	if idx0 == 8
 		mov	r10,	psw
-		st	r10,	TMP
-		l	er10,	VER8
-		st	er10,	[ea+]
-		l	er10,	VER10
-		st	er10,	[ea]
-		l	r10,	TMP
+		l	er8,	VER8
+		st	er8,	[ea+]
+		l	er8,	VER10
+		st	er8,	[ea]
 		mov	psw,	r10
 	else
 		st	xrn,	[ea]
@@ -871,12 +853,10 @@ idx0 set 0
 irp xrn, <xr0, xr4, xr8, xr12>
 	if idx0 == 8
 		mov	r10,	psw
-		st	r10,	TMP
-		l	er10,	VER8
-		st	er10,	[ea+]
-		l	er10,	VER10
-		st	er10,	[ea+]
-		l	r10,	TMP
+		l	er8,	VER8
+		st	er8,	[ea+]
+		l	er8,	VER10
+		st	er8,	[ea+]
 		mov	psw,	r10
 	else
 		st	xrn,	[ea+]
@@ -895,13 +875,11 @@ _st_qr0_ea:
 ;ST QR8, [EA]
 _st_qr8_ea:
 	mov	r10,	psw
-	st	r10,	TMP
-	l	er10,	VER8
-	st	er10,	[ea+]
-	l	er10,	VER10
-	st	er10,	[ea+]
+	l	er8,	VER8
+	st	er8,	[ea+]
+	l	er8,	VER10
+	st	er8,	[ea+]
 	st	xr12,	[ea]
-	l	r10,	TMP
 	mov	psw,	r10
 	pop	er10
 	b	er10
@@ -915,13 +893,11 @@ _st_qr0_eap:
 ;ST QR8, [EA+]
 _st_qr8_eap:
 	mov	r10,	psw
-	st	r10,	TMP
-	l	er10,	VER8
-	st	er10,	[ea+]
-	l	er10,	VER10
-	st	er10,	[ea+]
+	l	er8,	VER8
+	st	er8,	[ea+]
+	l	er8,	VER10
+	st	er8,	[ea+]
 	st	xr12,	[ea+]
-	l	r10,	TMP
 	mov	psw,	r10
 	pop	er10
 	b	er10
@@ -931,22 +907,18 @@ idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		mov	r8,	psw
 		if idx1 >= 8 && idx1 < 12
-			st	er8,	TMP
-			mov	r8,	psw
-			st	r8,	TMP + 2
+			st	r8,	_PSW
 			pop	er10
 			l	er8,	VXR8 + idx1 - 8
 			add	er10,	er8
-			l	r8,	TMP + 2
+			l	r8,	_PSW
 		else
 			pop	er10
-			st	er8,	TMP
-			mov	r8,	psw
 			add	er10,	erm
 		endif
 		mov	psw,	r8
-		l	er8,	TMP
 		if idx0 >= 8 && idx0 < 12
 			l	r10,	[er10]
 			st	r10,	VXR8 + idx0 - 8
@@ -965,22 +937,18 @@ idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		mov	r8,	psw
 		if idx1 >= 8 && idx1 < 12
-			st	er8,	TMP
-			mov	r8,	psw
-			st	r8,	TMP + 2
+			st	r8,	_PSW
 			pop	er10
 			l	er8,	VXR8 + idx1 - 8
 			add	er10,	er8
-			l	r8,	TMP + 2
+			l	r8,	_PSW
 		else
 			pop	er10
-			st	er8,	TMP
-			mov	r8,	psw
 			add	er10,	erm
 		endif
 		mov	psw,	r8
-		l	er8,	TMP
 		if idx0 >= 8 && idx0 < 12
 			l	er10,	[er10]
 			st	er10,	VXR8 + idx0 - 8
@@ -1054,13 +1022,9 @@ endm
 idx0 set 0
 irp xrn, <xr0, xr4, xr8, xr12>
 	if idx0 == 8
-		st	er8,	TMP
 		l	xr8,	[ea]
 		st	er8,	VER8
 		st	er10,	VER10
-		mov	r10,	psw
-		l	er8,	TMP
-		mov	psw,	r10
 	else
 		l	xrn,	[ea]
 	endif
@@ -1073,13 +1037,9 @@ endm
 idx0 set 0
 irp xrn, <xr0, xr4, xr8, xr12>
 	if idx0 == 8
-		st	er8,	TMP
 		l	xr8,	[ea+]
 		st	er8,	VER8
 		st	er10,	VER10
-		mov	r10,	psw
-		l	er8,	TMP
-		mov	psw,	r10
 	else
 		l	xrn,	[ea+]
 	endif
@@ -1096,13 +1056,9 @@ _l_qr0_ea:
 
 ;L QR8, [EA]
 _l_qr8_ea:
-	st	er8,	TMP
 	l	qr8,	[ea]
 	st	er8,	VER8
 	st	er10,	VER10
-	mov	r10,	psw
-	l	er8,	TMP
-	mov	psw,	r10
 	pop	er10
 	b	er10
 
@@ -1114,13 +1070,9 @@ _l_qr0_eap:
 
 ;L QR8, [EA+]
 _l_qr8_eap:
-	st	er8,	TMP
 	l	qr8,	[ea+]
 	st	er8,	VER8
 	st	er10,	VER10
-	mov	r10,	psw
-	l	er8,	TMP
-	mov	psw,	r10
 	pop	er10
 	b	er10
 
@@ -1153,13 +1105,11 @@ _bal:
 
 ;B ERn
 idx0 set 0
-irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
+irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 	if idx0 >= 8 && idx0 < 12
-		mov	sp,	er8
-		mov	r8,	psw
-		l	er10,	VXR8 + idx0 - 8
-		mov	psw,	r8
-		mov	er8,	sp
+		mov	r10,	psw
+		l	er8,	VXR8 + idx0 - 8
+		mov	psw,	r10
 	endif
 	mov	sp,	ern
 	pop	er10
@@ -1170,44 +1120,38 @@ endm
 
 ;long jump
 _b:
-	mov	er10,	sp
-	mov	sp,	er8
+	mov	er8,	sp
 	swi	#1
-	mov	sp,	er10
+	mov	sp,	er8
 	pop	er10
 	b	er10
 
 _bl:
-	mov	er10,	sp
-	mov	sp,	er8
-	mov	r8,	psw
-	push	r8
+	mov	r10,	psw
 	l	er8,	VCSR
 	st	er8,	VLCSR
-	mov	er8,	er10
+	mov	er8,	sp
 	add	er8,	#4
 	st	er8,	VLR
-	pop	psw
+	mov	psw,	r10
 	mov	er8,	sp
 	swi	#1
-	mov	sp,	er10
+	mov	sp,	er8
 	pop	er10
 	b	er10
 
 ;BL ERn
 idx0 set 0
-irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
-	mov	er10,	sp
-	st	er10,	VLR
-	mov	sp,	er8
-	mov	r8,	psw
-	l	er10,	VCSR
-	st	er10,	VLCSR
-	if idx0 >= 8 && idx0 < 12
-		l	er10,	VXR8 + idx0 - 8
-	endif
-	mov	psw,	r8
+irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
+	mov	r10,	psw
+	l	er8,	VCSR
+	st	er8,	VLCSR
 	mov	er8,	sp
+	st	er8,	VLR
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	VXR8 + idx0 - 8
+	endif
+	mov	psw,	r10
 	mov	sp,	ern
 	pop	er10
 	b	er10
@@ -1215,17 +1159,90 @@ irp ern, <er0, er2, er4, er6, er10, er10, er12, er14>
 endm
 
 _rt:
-	mov	sp,	er8
-	mov	r8,	psw
-	mov	r10,	#byte1 VLR
-	mov	r11,	#byte2 VLR
-	mov	psw,	r8
-	mov	er8,	sp
+	mov	r10,	psw
+	mov	r8,	#byte1 VLR
+	mov	r9,	#byte2 VLR
+	mov	psw,	r10
 	swi	#1
+	mov	sp,	er8
+	pop	er10
+	b	er10
+
+_syscall:
+	mov	r8,	psw
+	st	r8,	_PSW
+	l	er8,	VCSR
+	st	er8,	VLCSR
+	mov	er8,	sp
+	add	er8,	#4
+	st	er8,	VLR
+	l	er8,	VSP
+	mov	er10,	sp
+	mov	sp,	er8
+	l	er8,	[er10]
+	l	er10,	02h[er10]
+	push	xr8
+	l	r8,	_PSW
+	push	r8
+	l	er8,	VER8
+	l	er10,	VER10
+	pop	psw
+	bl	__stack_call
+	st	er8,	VER8
+	st	er10,	VER10
+	mov	r10,	psw
+	mov	r8,	#byte1 VLR
+	mov	r9,	#byte2 VLR
+	mov	psw,	r10
+	swi	#1
+	mov	sp,	er8
+	pop	er10
+	b	er10
+
+;VDSR <- ERn
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	VXR8 + idx0 - 8
+	else
+		mov	er8,	ern
+	endif
+	mov	psw,	r10
+	swi	#2
+	pop	er10
+	b	er10
+	idx0 set idx0 + 2
+endm
+
+;VDSR <- imm16
+_mov_dsr_imm16:
+	pop	er8
+	swi	#2
+	pop	er10
+	b	er10
+
+;PUSH ELR
+_push_elr:
+	mov	er10,	sp
+	mov	sp,	er8
+	push	elr
+	mov	er8,	sp
 	mov	sp,	er10
 	pop	er10
 	b	er10
 
+;PUSH EPSW
+_push_epsw:
+	mov	er10,	sp
+	mov	sp,	er8
+	push	epsw
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
+
+;PUSH LR
 _push_lr:
 	mov	er10,	sp
 	st	er10,	TMP
@@ -1242,16 +1259,35 @@ _push_lr:
 	pop	er10
 	b	er10
 
-_pop_pc:
-	mov	sp,	er8
+;PUSH EA
+_push_ea:
 	mov	er10,	sp
-	swi	#1
-	add	sp,	#4
+	mov	sp,	er8
+	push	ea
 	mov	er8,	sp
 	mov	sp,	er10
 	pop	er10
 	b	er10
 
+;POP EA
+_pop_ea:
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	ea
+	mov	er8,	sp
+	mov	sp,	er10
+	pop	er10
+	b	er10
+
+;POP PSW
+_pop_psw:
+	l	r10,	[er8]
+	add	er8,	#2
+	mov	psw,	r10
+	pop	er10
+	b	er10
+
+;POP LR
 _pop_lr:
 	mov	er10,	sp
 	mov	sp,	er8
@@ -1264,54 +1300,12 @@ _pop_lr:
 	pop	er10
 	b	er10
 
-_syscall:
-	mov	er10,	sp
+;POP PC
+_pop_pc:
 	mov	sp,	er8
-	st	er10,	TMP
-	bl	_do_syscall
-	st	er8,	VER8
-	st	er10,	VER10
-	mov	r8,	psw
-	l	er10,	TMP
-	add	er10,	#4
-	mov	psw,	r8
-	mov	er8,	sp
-	mov	sp,	er10
-	pop	er10
-	b	er10
-
-;VDSR <- ERn
-idx0 set 0
-irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	mov	er10,	sp
-	mov	sp,	er8
-	if idx0 >= 8 && idx0 < 12
-		mov	r8,	psw
-		push	r8
-		l	er8,	VXR8 + idx0 - 8
-		pop	psw
-	else
-		push	ern
-		pop	er8
-	endif
-	swi	#2
-	mov	er8,	sp
-	mov	sp,	er10
-	pop	er10
-	b	er10
-	idx0 set idx0 + 2
-endm
-
-;VDSR <- imm16
-_mov_dsr_imm16:
-	mov	er10,	sp
-	mov	sp,	er8
-	mov	r8,	psw
-	push	r8
-	l	er8,	[er10]
-	add	er10,	#2
-	pop	psw
-	swi	#2
+	swi	#1
+	add	sp,	#4
 	mov	er8,	sp
 	mov	sp,	er10
 	pop	er10
