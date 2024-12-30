@@ -644,37 +644,70 @@ irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 endm
 
 ;ST Rn, [ERm]
-; idx1 set 0
-; irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
-; 	idx0 set 0
-; 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
-; 		if idx1 >= 8 && idx1 < 12
-; 			st	er8,	TMP
-; 			mov	r11,	psw
-; 			l	er8,	VXR8 + idx1 - 8
-; 			if idx0 == idx1
-; 				st	r8,	[er8]
-; 			elseif idx0 == idx1 - 1
-; 				st	r9,	[er8]
-; 			else
-; 				l	r10,	VXR8 + idx0 - 8
-; 				st	r10,	[er8]
-; 			endif
-; 			l	er8,	TMP
-; 			mov	psw,	r11
-; 		elseif idx0 >= 8 && idx0 < 12
-; 			mov	r11,	psw
-; 			l	r10,	VXR8 + idx0 - 8
-; 			mov	psw,	r11
-; 			st	r10,	[erm]
-; 		else
-; 			st	rn,	[erm]
-; 		endif
-; 		fetch
-; 		idx0 set idx0 + 1
-; 	endm
-; 	idx1 set idx1 + 2
-; endm
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx0 set 0
+	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx1 >= 8 && idx1 < 12
+			mov	r11,	psw
+			l	er8,	VXR8 + idx1 - 8
+			if idx0 == idx1
+				st	r8,	[er8]
+			elseif idx0 == idx1 - 1
+				st	r9,	[er8]
+			elseif idx0 >= 8 && idx0 < 12
+				l	r10,	VXR8 + idx0 - 8
+				st	r10,	[er8]
+			else
+				st	rn,	[er8]
+			endif
+			mov	psw,	r11
+		elseif idx0 >= 8 && idx0 < 12
+			mov	r10,	psw
+			l	r8,	VXR8 + idx0 - 8
+			st	r8,	[erm]
+			mov	psw,	r10
+		else
+			st	rn,	[erm]
+		endif
+		fetch
+		idx0 set idx0 + 1
+	endm
+	idx1 set idx1 + 2
+endm
+
+;ST ERn, [ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	idx0 set 0
+	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		if idx1 >= 8 && idx1 < 12
+			mov	r10,	psw
+			l	er8,	VXR8 + idx1 - 8
+			if idx0 == idx1
+				st	er8,	[er8]
+			elseif idx0 >= 8 && idx0 < 12
+				st	r10,	_PSW
+				l	er10,	VXR8 + idx0 - 8
+				st	er10,	[er8]
+				l	r10,	_PSW
+			else
+				st	ern,	[er8]
+			endif
+			mov	psw,	r10
+		elseif idx0 >= 8 && idx0 < 12
+			mov	r10,	psw
+			l	er8,	VXR8 + idx0 - 8
+			st	er8,	[erm]
+			mov	psw,	r10
+		else
+			st	ern,	[erm]
+		endif
+		fetch
+		idx0 set idx0 + 2
+	endm
+	idx1 set idx1 + 2
+endm
 
 ;ST Rn, Disp16[ERm]
 idx1 set 0
@@ -753,6 +786,39 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 		idx0 set idx0 + 2
 	endm
 	idx1 set idx1 + 2
+endm
+
+;ST Rn, Dadr
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+	pop	er8
+	if idx0 >= 8 && idx0 < 12
+		mov	r11,	psw
+		l	r10,	VXR8 + idx0 - 8
+		mov	psw,	r11
+		st	r10,	[er8]
+	else
+		st	rn,	[er8]
+	endif
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;ST ERn, Dadr
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	if idx0 >= 8 && idx0 < 12
+		mov	r8,	psw
+		l	er10,	VXR8 + idx0 - 8
+		mov	psw,	r8
+		pop	er8
+		st	er10,	[er8]
+	else
+		pop	er8
+		st	ern,	[er8]
+	endif
+	fetch
+	idx0 set idx0 + 2
 endm
 
 ;ST Rn, [EA]
@@ -881,6 +947,46 @@ _st_qr8_eap:
 	mov	psw,	r10
 	fetch
 
+;L Rn, [ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er8, er12, er14>
+	idx0 set 0
+	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		if idx1 >= 8 && idx1 < 12
+			l	er8,	VXR8 + idx1 - 8
+		endif
+		if idx0 >= 8 && idx0 < 12
+			l	r8,	[erm]
+			st	r8,	VXR8 + idx0 - 8
+		else
+			l	rn,	[erm]
+		endif
+		fetch
+		idx0 set idx0 + 1
+	endm
+	idx1 set idx1 + 2
+endm
+
+;L ERn, [ERm]
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er8, er12, er14>
+	idx0 set 0
+	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+		if idx1 >= 8 && idx1 < 12
+			l	er8,	VXR8 + idx1 - 8
+		endif
+		if idx0 >= 8 && idx0 < 12
+			l	er8,	[erm]
+			st	er8,	VXR8 + idx0 - 8
+		else
+			l	ern,	[erm]
+		endif
+		fetch
+		idx0 set idx0 + 2
+	endm
+	idx1 set idx1 + 2
+endm
+
 ;L Rn, Disp16[ERm]
 idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
@@ -937,6 +1043,34 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 		idx0 set idx0 + 2
 	endm
 	idx1 set idx1 + 2
+endm
+
+;L Rn, Dadr
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+	pop	er8
+	if idx0 >= 8 && idx0 < 12
+		l	r8,	[er8]
+		st	r8,	VXR8 + idx0 - 8
+	else
+		l	rn,	[er8]
+	endif
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;L ERn, Dadr
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	pop	er8
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	[er8]
+		st	er8,	VXR8 + idx0 - 8
+	else
+		l	ern,	[er8]
+	endif
+	fetch
+	idx0 set idx0 + 2
 endm
 
 ;L Rn, [EA]
@@ -1075,7 +1209,6 @@ irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 	fetch
 	idx0 set idx0 + 2
 endm
-	
 
 ;long jump
 _b:
