@@ -30,11 +30,14 @@ _PSW	EQU	0900Eh
 ;A flag to identify if the cpu is running in virtualized mode
 VM_RUNNING	EQU	0900Fh
 
+;register backup for interrupt handlers
+TMP	EQU	09010h
+
 ;user-registered exception handler
 ;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
-_EXCEPTION_HANDLER	EQU	09010h
-_EXCEPTION_HANDLER_CSR	EQU	09012h
-_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09013h	;boolean value
+_EXCEPTION_HANDLER	EQU	09020h
+_EXCEPTION_HANDLER_CSR	EQU	09022h
+_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09023h	;boolean value
 
 extrn code	:	reload_code_segment
 extrn code	:	reload_data_segment
@@ -69,51 +72,57 @@ default_handler:
 
 ;SWI 1 handler
 ;Change current code segment
-;in: er10-pointer to target virtual address
-;out: er10-low 16 bits of the target virtual address
+;in: er8-pointer to target virtual address
 _SWI_1:
+	l	er10,	VSP
+	mov	sp,	er10
 	push	ea
 	push	xr0
-	lea	[er10]
-	l	xr0,	[ea]
-	mov	er10,	er0
+	lea	[er8]
+	l	xr8,	[ea]
 	l	er0,	VCSR
-	cmp	er2,	er0
+	cmp	er10,	er0
 	bne	do_csr_switch
 	pop	xr0
 	pop	ea
+	mov	sp,	er8
 	rti
 
 do_csr_switch:
-	st	er2,	VCSR
+	st	er10,	VCSR
 	;calls a function to load the target code segment from external storage to allocated region of the internal ram.
-	mov	er0,	er2
+	mov	er0,	er10
 	bl	reload_code_segment
 	pop	xr0
 	pop	ea
+	mov	sp,	er8
 	rti
 
 ;SWI 2 handler
 ;Change current data segment
 ;in: er8-target data segment
 _SWI_2:
-	push	er0
-	l	er0,	VDSR
-	cmp	er8,	er0
+	l	er10,	VDSR
+	cmp	er8,	er10
 	bne	do_dsr_switch
-	pop	er0
 	rti
 
 do_dsr_switch:
-	push	ea
-	push	er2
 	st	er8,	VDSR
+	mov	er8,	sp
+	st	er8,	TMP
+	l	er8,	VSP
+	mov	sp,	er8
+	push	ea
+	push	xr0
 	;calls a function to save and load the target data segment from external storage.
-	mov	er2,	er8
+	mov	er0,	er10
+	l	er2,	VDSR
+	l	er10,	TMP
 	bl	reload_data_segment
-	pop	er2
+	pop	xr0
 	pop	ea
-	pop	er0
+	mov	sp,	er10
 	rti
 
 ;VM instruction handler segment
@@ -1122,7 +1131,6 @@ endm
 _b:
 	mov	er8,	sp
 	swi	#1
-	mov	sp,	er8
 	pop	er10
 	b	er10
 
@@ -1136,7 +1144,6 @@ _bl:
 	mov	psw,	r10
 	mov	er8,	sp
 	swi	#1
-	mov	sp,	er8
 	pop	er10
 	b	er10
 
@@ -1164,7 +1171,6 @@ _rt:
 	mov	r9,	#byte2 VLR
 	mov	psw,	r10
 	swi	#1
-	mov	sp,	er8
 	pop	er10
 	b	er10
 
@@ -1195,7 +1201,6 @@ _syscall:
 	mov	r9,	#byte2 VLR
 	mov	psw,	r10
 	swi	#1
-	mov	sp,	er8
 	pop	er10
 	b	er10
 
@@ -1222,73 +1227,86 @@ _mov_dsr_imm16:
 	pop	er10
 	b	er10
 
-;PUSH ELR
-_push_elr:
-	mov	er10,	sp
-	mov	sp,	er8
-	push	elr
-	mov	er8,	sp
-	mov	sp,	er10
-	pop	er10
-	b	er10
+; ;PUSH ELR
+; _push_elr:
+; 	mov	er10,	sp
+; 	mov	sp,	er8
+; 	push	elr
+; 	mov	er8,	sp
+; 	mov	sp,	er10
+; 	pop	er10
+; 	b	er10
 
-;PUSH EPSW
-_push_epsw:
-	mov	er10,	sp
-	mov	sp,	er8
-	push	epsw
-	mov	er8,	sp
-	mov	sp,	er10
-	pop	er10
-	b	er10
+; ;PUSH EPSW
+; _push_epsw:
+; 	mov	er10,	sp
+; 	mov	sp,	er8
+; 	push	epsw
+; 	mov	er8,	sp
+; 	mov	sp,	er10
+; 	pop	er10
+; 	b	er10
 
 ;PUSH LR
 _push_lr:
-	mov	er10,	sp
-	st	er10,	TMP
-	mov	sp,	er8
 	mov	r8,	psw
+	st	r8,	_PSW
+	l	er8,	VSP
+	add	er8,	#-2
 	l	er10,	VLCSR
-	push	er10
+	st	er10,	[er8]
+	add	er8,	#-2
 	l	er10,	VLR
-	push	er10
-	l	er10,	TMP
+	st	er10,	[er8]
+	st	er8,	VSP
+	l	r8,	_PSW
 	mov	psw,	r8
-	mov	er8,	sp
-	mov	sp,	er10
 	pop	er10
 	b	er10
 
 ;PUSH EA
 _push_ea:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	mov	er10,	sp
 	mov	sp,	er8
 	push	ea
 	mov	er8,	sp
+	st	er8,	VSP
 	mov	sp,	er10
 	pop	er10
 	b	er10
 
 ;POP EA
 _pop_ea:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	ea
 	mov	er8,	sp
+	st	er8,	VSP
 	mov	sp,	er10
 	pop	er10
 	b	er10
 
 ;POP PSW
 _pop_psw:
+	l	er8,	VSP
 	l	r10,	[er8]
 	add	er8,	#2
+	st	er8,	VSP
 	mov	psw,	r10
 	pop	er10
 	b	er10
 
 ;POP LR
 _pop_lr:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	er8
@@ -1296,18 +1314,22 @@ _pop_lr:
 	pop	er8
 	st	er8,	VLCSR
 	mov	er8,	sp
+	st	er8,	VSP
 	mov	sp,	er10
 	pop	er10
 	b	er10
 
 ;POP PC
 _pop_pc:
-	mov	sp,	er8
-	mov	er10,	sp
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	swi	#1
-	add	sp,	#4
-	mov	er8,	sp
-	mov	sp,	er10
+	mov	r10,	psw
+	l	er8,	VSP
+	add	er8,	#4
+	st	er8,	VSP
+	mov	psw,	r10
 	pop	er10
 	b	er10
 
@@ -1315,11 +1337,13 @@ _pop_pc:
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 	mov	r11,	psw
+	l	er8,	VSP
 	if idx0 >= 8 && idx0 < 12
 		l	r10,	VXR8 + idx0 - 8
 	endif
 	add	er8,	#-2
 	st	rn,	[er8]
+	st	er8,	VSP
 	mov	psw,	r11
 	pop	er10
 	b	er10
@@ -1330,72 +1354,110 @@ endm
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	mov	r10,	psw
+	l	er8,	VSP
 	add	er8,	#-2
 	if idx0 >= 8 && idx0 < 12
-		st	r10,	TMP
+		st	r10,	_PSW
 		l	er10,	VXR8 + idx0 - 8
 		st	er10,	[er8]
-		l	r10,	TMP
+		l	r10,	_PSW
 	else
 		st	ern,	[er8]
 	endif
+	st	er8,	VSP
 	mov	psw,	r10
 	pop	er10
 	b	er10
 	idx0 set idx0 + 2
 endm
 
-;PUSH XRn
-idx0 set 0
-irp xrn, <xr0, xr4, xr8, xr12>
-	if idx0 == 8
-		mov	r10,	psw
-		st	r10,	TMP
-		add	er8,	#-2
-		l	er10,	VER10
-		st	er10,	[er8]
-		add	er8,	#-2
-		l	er10,	VER8
-		st	er10,	[er8]
-		l	r10,	TMP
-		mov	psw,	r10
-	else
-		mov	er10,	sp
-		mov	sp,	er8
-		push	xrn
-		mov	er8,	sp
-		mov	sp,	er10
-	endif
+;PUSH XR0
+_push_xr0:
+	mov	r10,	psw
+	l	er8,	VSP
+	add	er8,	#-2
+	st	er2,	[er8]
+	add	er8,	#-2
+	st	er0,	[er8]
+	st	er8,	VSP
+	mov	psw,	r10
 	pop	er10
 	b	er10
-	idx0 set idx0 + 4
-endm
+
+;PUSH XR4
+_push_xr4:
+	mov	r10,	psw
+	l	er8,	VSP
+	add	er8,	#-2
+	st	er6,	[er8]
+	add	er8,	#-2
+	st	er4,	[er8]
+	st	er8,	VSP
+	mov	psw,	r10
+	pop	er10
+	b	er10
+
+;PUSH XR8
+_push_xr8:
+	mov	r10,	psw
+	st	r10,	_PSW
+	l	er8,	VSP
+	add	er8,	#-2
+	l	er10,	VER10
+	st	er10,	[er8]
+	add	er8,	#-2
+	l	er10,	VER8
+	st	er10,	[er8]
+	st	er8,	VSP
+	l	r10,	_PSW
+	mov	psw,	r10
+	pop	er10
+	b	er10
+
+;PUSH XR12
+_push_xr12:
+	mov	r10,	psw
+	l	er8,	VSP
+	add	er8,	#-2
+	st	er14,	[er8]
+	add	er8,	#-2
+	st	er12,	[er8]
+	st	er8,	VSP
+	mov	psw,	r10
+	pop	er10
+	b	er10
 
 ;PUSH QR0
 _push_qr0:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	mov	er10,	sp
 	mov	sp,	er8
 	push	qr0
 	mov	er8,	sp
 	mov	sp,	er10
+	st	er8,	VSP
 	pop	er10
 	b	er10
 
 ;PUSH QR8
 _push_qr8:
+	mov	r8,	psw
+	st	r8,	_PSW
+	l	er8,	VSP
 	mov	er10,	sp
 	mov	sp,	er8
-	st	er10,	TMP
-	mov	r8,	psw
 	push	xr12
-	l	er10,	VER10
-	push	er10
-	l	er10,	VER8
-	push	er10
-	l	er10,	TMP
-	mov	psw,	r8
+	l	er8,	VER10
+	push	er8
+	l	er8,	VER8
+	push	er8
 	mov	er8,	sp
 	mov	sp,	er10
+	st	er8,	VSP
+	l	r8,	_PSW
+	mov	psw,	r8
 	pop	er10
 	b	er10
 
@@ -1403,11 +1465,13 @@ _push_qr8:
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 	mov	r11,	psw
+	l	er8,	VSP
 	l	rn,	[er8]
 	if idx0 >= 8 && idx0 < 12
 		st	r10,	VXR8 + idx0 - 8
 	endif
 	add	er8,	#2
+	st	er8,	VSP
 	mov	psw,	r11
 	pop	er10
 	b	er10
@@ -1418,16 +1482,22 @@ endm
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
+		mov	r10,	psw
+		l	er8,	VSP
+		mov	psw,	r10
 		mov	er10,	sp
 		mov	sp,	er8
 		pop	er8
 		st	er8,	VXR8 + idx0 - 8
 		mov	er8,	sp
 		mov	sp,	er10
+		st	er8,	VSP
 	else
 		mov	r10,	psw
+		l	er8,	VSP
 		l	ern,	[er8]
 		add	er8,	#2
+		st	er8,	VSP
 		mov	psw,	r10
 	endif
 	pop	er10
@@ -1435,38 +1505,81 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set idx0 + 2
 endm
 
-;POP XRn
-idx0 set 0
-irp xrn, <xr0, xr4, xr8, xr12>
-	mov	er10,	sp
-	mov	sp,	er8
-	if idx0 == 8
-		pop	er8
-		st	er8,	VER8
-		pop	er8
-		st	er8,	VER10
-	else
-		pop	xrn
-	endif
-	mov	er8,	sp
-	mov	sp,	er10
+;POP XR0
+_pop_xr0:
+	mov	r10,	psw
+	l	er8,	VSP
+	l	er0,	[er8]
+	add	er8,	#2
+	l	er2,	[er8]
+	add	er8,	#2
+	st	er8,	VSP
+	mov	psw,	r10
 	pop	er10
 	b	er10
-	idx0 set idx0 + 4
-endm
+
+;POP XR4
+_pop_xr4:
+	mov	r10,	psw
+	l	er8,	VSP
+	l	er4,	[er8]
+	add	er8,	#2
+	l	er6,	[er8]
+	add	er8,	#2
+	st	er8,	VSP
+	mov	psw,	r10
+	pop	er10
+	b	er10
+
+;POP XR8
+_pop_xr8:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	er8
+	st	er8,	VER8
+	pop	er8
+	st	er8,	VER10
+	mov	er8,	sp
+	mov	sp,	er10
+	st	er8,	VSP
+	pop	er10
+	b	er10
+
+;POP XR12
+_pop_xr12:
+	mov	r10,	psw
+	l	er8,	VSP
+	l	er12,	[er8]
+	add	er8,	#2
+	l	er14,	[er8]
+	add	er8,	#2
+	st	er8,	VSP
+	mov	psw,	r10
+	pop	er10
+	b	er10
 
 ;POP QR0
 _pop_qr0:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	qr0
 	mov	er8,	sp
 	mov	sp,	er10
+	st	er8,	VSP
 	pop	er10
 	b	er10
 
 ;POP QR8
 _pop_qr8:
+	mov	r10,	psw
+	l	er8,	VSP
+	mov	psw,	r10
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	er8
@@ -1476,5 +1589,6 @@ _pop_qr8:
 	pop	xr12
 	mov	er8,	sp
 	mov	sp,	er10
+	st	er8,	VSP
 	pop	er10
 	b	er10
