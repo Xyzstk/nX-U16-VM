@@ -128,46 +128,52 @@ do_dsr_switch:
 ;VM instruction handler segment
 cseg #1 at 00000h
 
+;fetch the next virtual instruction and jump to handler.
+;placed at the end of each handler.
+fetch macro
+	pop	er8	;1 cycle. Stack operation doesn't set flags.
+	b	er8	;2 cycles. Minimum extra cycles count possible in each virtual instruction handler is 3. An alternate in SMALL model is using POP PC, which also takes 3 cycles.
+endm
+
 ;handler for `insn rn, rm` style instructions
 insn_rn_rm macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		idx1 set 0
-		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
 				if idx0 == idx1
-					l	r10,	VXR8 + idx0 - 8
-					insn	r10,	r10
-					st	r10,	VXR8 + idx0 - 8
+					l	r8,	VXR8 + idx0 - 8
+					insn	r8,	r8
+					st	r8,	VXR8 + idx0 - 8
 				elseif (idx0 & 0Fh) == (idx1 & 0Fh)
-					l	er10,	VXR8 + (idx0 & 0Fh) - 8
+					l	er8,	VXR8 + (idx0 & 0Fh) - 8
 					if idx0 < idx1
-						insn	r10,	r11
-						st	r10,	VXR8 + idx0 - 8
+						insn	r8,	r9
+						st	r8,	VXR8 + idx0 - 8
 					else
-						insn	r11,	r10
-						st	r11,	VXR8 + idx0 - 8
+						insn	r9,	r8
+						st	r9,	VXR8 + idx0 - 8
 					endif
 				elseif idx1 >= 8 && idx1 < 12
-					l	r10,	VXR8 + idx0 - 8
-					l	r11,	VXR8 + idx1 - 8
-					insn	r10,	r11
-					st	r10,	VXR8 + idx0 - 8
+					l	r8,	VXR8 + idx0 - 8
+					l	r9,	VXR8 + idx1 - 8
+					insn	r8,	r9
+					st	r8,	VXR8 + idx0 - 8
 				else
-					l	r10,	VXR8 + idx0 - 8
-					insn	r10,	rm
-					st	r10,	VXR8 + idx0 - 8
+					l	r8,	VXR8 + idx0 - 8
+					insn	r8,	rm
+					st	r8,	VXR8 + idx0 - 8
 				endif
 				$ reset(unhandled)
 			elseif idx1 >= 8 && idx1 < 12
-				l	r10,	VXR8 + idx1 - 8
+				l	r8,	VXR8 + idx1 - 8
 			endif
 			$ if(unhandled)
 				insn	rn,	rm
 			$ endif
-			pop	er10
-			b	er10
+			fetch
 			idx1 set idx1 + 1
 		endm
 		idx0 set idx0 + 1
@@ -178,48 +184,47 @@ insn_rn_rm_saveflags macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		idx1 set 0
-		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+		irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
-				mov	r8,	psw
+				mov	r10,	psw
 				if idx0 == idx1
-					l	r10,	VXR8 + idx0 - 8
-					mov	psw,	r8
-					insn	r10,	r10
-					st	r10,	VXR8 + idx0 - 8
+					l	r8,	VXR8 + idx0 - 8
+					mov	psw,	r10
+					insn	r8,	r8
+					st	r8,	VXR8 + idx0 - 8
 				elseif (idx0 & 0Fh) == (idx1 & 0Fh)
-					l	er10,	VXR8 + (idx0 & 0Fh) - 8
-					mov	psw,	r8
+					l	er8,	VXR8 + (idx0 & 0Fh) - 8
+					mov	psw,	r10
 					if idx0 < idx1
-						insn	r10,	r11
-						st	r10,	VXR8 + idx0 - 8
+						insn	r8,	r9
+						st	r8,	VXR8 + idx0 - 8
 					else
-						insn	r11,	r10
-						st	r11,	VXR8 + idx0 - 8
+						insn	r9,	r8
+						st	r9,	VXR8 + idx0 - 8
 					endif
 				elseif idx1 >= 8 && idx1 < 12
-					l	r10,	VXR8 + idx0 - 8
-					l	r11,	VXR8 + idx1 - 8
-					mov	psw,	r8
-					insn	r10,	r11
-					st	r10,	VXR8 + idx0 - 8
+					l	r8,	VXR8 + idx0 - 8
+					l	r9,	VXR8 + idx1 - 8
+					mov	psw,	r10
+					insn	r8,	r9
+					st	r8,	VXR8 + idx0 - 8
 				else
-					l	r10,	VXR8 + idx0 - 8
-					mov	psw,	r8
-					insn	r10,	rm
-					st	r10,	VXR8 + idx0 - 8
+					l	r8,	VXR8 + idx0 - 8
+					mov	psw,	r10
+					insn	r8,	rm
+					st	r8,	VXR8 + idx0 - 8
 				endif
 				$ reset(unhandled)
 			elseif idx1 >= 8 && idx1 < 12
-				mov	r11,	psw
-				l	r10,	VXR8 + idx1 - 8
-				mov	psw,	r11
+				mov	r10,	psw
+				l	r8,	VXR8 + idx1 - 8
+				mov	psw,	r10
 			endif
 			$ if(unhandled)
 				insn	rn,	rm
 			$ endif
-			pop	er10
-			b	er10
+			fetch
 			idx1 set idx1 + 1
 		endm
 		idx0 set idx0 + 1
@@ -231,32 +236,31 @@ insn_ern_erm macro insn
 	idx0 set 0
 	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 		idx1 set 0
-		irp erm, <er0, er2, er4, er6, er10, er10, er12, er14>
+		irp erm, <er0, er2, er4, er6, er8, er8, er12, er14>
 			$ set(unhandled)
 			if idx0 >= 8 && idx0 < 12
-				l	er10,	VXR8 + idx0 - 8
+				l	er8,	VXR8 + idx0 - 8
 				if idx0 == idx1
-					insn	er10,	er10
-					st	er10,	VXR8 + idx0 - 8
+					insn	er8,	er8
+					st	er8,	VXR8 + idx0 - 8
 				elseif idx1 >= 8 && idx1 < 12
-					l	er8,	VXR8 + idx1 - 8
-					insn	er10,	er8
-					st	er10,	VXR8 + idx0 - 8
+					l	er10,	VXR8 + idx1 - 8
+					insn	er8,	er10
+					st	er8,	VXR8 + idx0 - 8
 				else
-					insn	er10,	erm
-					st	er10,	VXR8 + idx0 - 8
+					insn	er8,	erm
+					st	er8,	VXR8 + idx0 - 8
 				endif
 				$ reset(unhandled)
 			else
 				if idx1 >= 8 && idx1 < 12
-					l	er10,	VXR8 + idx1 - 8
+					l	er8,	VXR8 + idx1 - 8
 				endif
 			endif
 			$ if(unhandled)
 				insn	ern,	erm
 			$ endif
-			pop	er10
-			b	er10
+			fetch
 			idx1 set idx1 + 2
 		endm
 		idx0 set idx0 + 2
@@ -267,16 +271,15 @@ endm
 insn_rn_imm8 macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
-		pop	r10
+		pop	r8
 		if idx0 >= 8 && idx0 < 12
-			l	r11,	VXR8 + idx0 - 8
-			insn	r11,	r10
-			st	r11,	VXR8 + idx0 - 8
+			l	r9,	VXR8 + idx0 - 8
+			insn	r9,	r8
+			st	r9,	VXR8 + idx0 - 8
 		else
-			insn	rn,	r10
+			insn	rn,	r8
 		endif
-		pop	er10
-		b	er10
+		fetch
 		idx0 set idx0 + 1
 	endm
 endm
@@ -284,19 +287,17 @@ endm
 insn_rn_imm8_saveflags macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+		pop	r8
 		if idx0 >= 8 && idx0 < 12
 			mov	r10,	psw
-			l	r11,	VXR8 + idx0 - 8
+			l	r9,	VXR8 + idx0 - 8
 			mov	psw,	r10
-			pop	r10
-			insn	r11,	r10
-			st	r11,	VXR8 + idx0 - 8
+			insn	r9,	r8
+			st	r9,	VXR8 + idx0 - 8
 		else
-			pop	r10
-			insn	rn,	r10
+			insn	rn,	r8
 		endif
-		pop	er10
-		b	er10
+		fetch
 		idx0 set idx0 + 1
 	endm
 endm
@@ -306,16 +307,15 @@ insn_rn macro insn
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		if idx0 >= 8 && idx0 < 12
-			mov	r11,	psw
-			l	r10,	VXR8 + idx0 - 8
-			mov	psw,	r11
-			insn	r10
-			st	r10,	VXR8 + idx0 - 8
+			mov	r10,	psw
+			l	r8,	VXR8 + idx0 - 8
+			mov	psw,	r10
+			insn	r8
+			st	r8,	VXR8 + idx0 - 8
 		else
 			insn	rn
 		endif
-		pop	er10
-		b	er10
+		fetch
 		idx0 set idx0 + 1
 	endm
 endm
@@ -323,8 +323,7 @@ endm
 ;handler for register-irrelevant instructions
 insn_misc macro insn
 	insn
-	pop	er10
-	b	er10
+	fetch
 endm
 
 insn_ern_erm add
@@ -347,6 +346,7 @@ insn_misc di
 insn_misc ei
 insn_ern_erm mov
 insn_rn_rm mov
+fetch	;nop
 insn_rn_rm or
 insn_rn_imm8 or
 insn_misc rc
@@ -377,8 +377,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	else
 		add	ern,	er10
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -392,33 +391,29 @@ _add_sp_imm:
 	st	er8,	VSP
 	l	r8,	_PSW
 	mov	psw,	r8
-	pop	er10
-	b	er10
+	fetch
 
 ;DEC [EA]
 _dec_ea:
 	dec	[ea]
-	pop	er10
-	b	er10
+	fetch
 
 ;INC [EA]
 _inc_ea:
 	inc	[ea]
-	pop	er10
-	b	er10
+	fetch
 
 ;EXTBW ERn
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
-		l	er10,	VXR8 + idx0 - 8
-		extbw	er10
-		st	er10,	VXR8 + idx0 - 8
+		l	er8,	VXR8 + idx0 - 8
+		extbw	er8
+		st	er8,	VXR8 + idx0 - 8
 	else
 		extbw	ern
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -447,16 +442,15 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 			endif
 			st	er8,	VXR8 + idx0 - 8
 		elseif idx1 >= 8 && idx1 < 12
-			mov	r11,	psw
-			l	r10,	VXR8 + idx1 - 8
-			mov	psw,	r11
-			div	ern,	r10
-			st	r10,	VXR8 + idx1 - 8
+			mov	r10,	psw
+			l	r8,	VXR8 + idx1 - 8
+			mov	psw,	r10
+			div	ern,	r8
+			st	r8,	VXR8 + idx1 - 8
 		else
 			div	ern,	rm
 		endif
-		pop	er10
-		b	er10
+		fetch
 		idx1 set idx1 + 1
 	endm
 	idx0 set idx0 + 2
@@ -466,7 +460,7 @@ endm
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx1 set 0
-	irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+	irp rm, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
 		$ set(unhandled)
 		if idx0 >= 8 && idx0 < 12
 			mov	r11,	psw
@@ -494,15 +488,14 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 			endif
 			$ reset(unhandled)
 		elseif idx1 >= 8 && idx1 < 12
-			mov	r11,	psw
-			l	r10,	VXR8 + idx1 - 8
-			mov	psw,	r11
+			mov	r10,	psw
+			l	r8,	VXR8 + idx1 - 8
+			mov	psw,	r10
 		endif
 		$ if(unhandled)
 			mul	ern,	rm
 		$ endif
-		pop	er10
-		b	er10
+		fetch
 		idx1 set idx1 + 1
 	endm
 	idx0 set idx0 + 2
@@ -511,8 +504,7 @@ endm
 ;LEA Dadr
 _lea_dadr:
 	pop	ea
-	pop	er10
-	b	er10
+	fetch
 
 ;LEA [ERm]
 idx0 set 0
@@ -525,29 +517,27 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	else
 		lea	[erm]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
 ;LEA Disp16[ERm]
 idx0 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
-	mov	r8,	psw
-	pop	er10
+	mov	r10,	psw
+	pop	er8
 	if idx0 >= 8 && idx0 < 12
-		st	r8,	_PSW
-		l	er8,	VXR8 + idx0 - 8
-		add	er10,	er8
-		lea	[er10]
-		l	r8,	_PSW
+		st	r10,	_PSW
+		l	er10,	VXR8 + idx0 - 8
+		add	er8,	er10
+		lea	[er8]
+		l	r10,	_PSW
 	else
-		add	er10,	erm
-		lea	[er10]
+		add	er8,	erm
+		lea	[er8]
 	endif
-	mov	psw,	r8
-	pop	er10
-	b	er10
+	mov	psw,	r10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -561,8 +551,7 @@ irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 		pop	ern
 	endif
 	mov	ern,	ern
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -576,8 +565,7 @@ irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
 		pop	rn
 	endif
 	mov	rn,	rn
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -585,14 +573,13 @@ endm
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 	if idx0 >= 8 && idx0 < 12
-		l	r10,	VXR8 + idx0 - 8
-		neg	r10
-		st	r10,	VXR8 + idx0 - 8
+		l	r8,	VXR8 + idx0 - 8
+		neg	r8
+		st	r8,	VXR8 + idx0 - 8
 	else
 		neg	rn
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -606,8 +593,7 @@ irp insn, <rb, sb>
 		mov	psw,	r11
 		insn	r10.bitidx
 		st	r10,	[er8]
-		pop	er10
-		b	er10
+		fetch
 	endm
 
 	;RB Rn.bit_offset
@@ -616,16 +602,15 @@ irp insn, <rb, sb>
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		irp bitidx, <0, 1, 2, 3, 4, 5, 6, 7>
 			if idx0 >= 8 && idx0 < 12
-				mov	r11,	psw
-				l	r10,	VXR8 + idx0 - 8
-				mov	psw,	r11
-				insn	r10.bitidx
-				st	r10,	VXR8 + idx0 - 8
+				mov	r10,	psw
+				l	r8,	VXR8 + idx0 - 8
+				mov	psw,	r10
+				insn	r8.bitidx
+				st	r8,	VXR8 + idx0 - 8
 			else
 				insn	rn.bitidx
 			endif
-			pop	er10
-			b	er10
+			fetch
 		endm
 		idx0 set idx0 + 1
 	endm
@@ -638,8 +623,7 @@ irp bitidx, <0, 1, 2, 3, 4, 5, 6, 7>
 	l	r10,	[er8]
 	mov	psw,	r11
 	tb	r10.bitidx
-	pop	er10
-	b	er10
+	fetch
 endm
 
 ;TB Rn.bit_offset
@@ -647,15 +631,14 @@ idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 	irp bitidx, <0, 1, 2, 3, 4, 5, 6, 7>
 		if idx0 >= 8 && idx0 < 12
-			mov	r11,	psw
-			l	r10,	VXR8 + idx0 - 8
-			mov	psw,	r11
-			tb	r10.bitidx
+			mov	r10,	psw
+			l	r8,	VXR8 + idx0 - 8
+			mov	psw,	r10
+			tb	r8.bitidx
 		else
 			tb	rn.bitidx
 		endif
-		pop	er10
-		b	er10
+		fetch
 	endm
 	idx0 set idx0 + 1
 endm
@@ -687,8 +670,7 @@ endm
 ; 		else
 ; 			st	rn,	[erm]
 ; 		endif
-; 		pop	er10
-; 		b	er10
+; 		fetch
 ; 		idx0 set idx0 + 1
 ; 	endm
 ; 	idx1 set idx1 + 2
@@ -700,36 +682,35 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 		if idx1 >= 8 && idx1 < 12
-			mov	r8,	psw
-			st	r8,	_PSW
-			pop	er10
-			l	er8,	VXR8 + idx1 - 8
-			add	er10,	er8
+			mov	r10,	psw
+			st	r10,	_PSW
+			pop	er8
+			l	er10,	VXR8 + idx1 - 8
+			add	er8,	er10
 			if idx0 == idx1
-				st	r8,	[er10]
+				st	r10,	[er8]
 			elseif idx0 == idx1 - 1
-				st	r9,	[er10]
+				st	r11,	[er8]
 			elseif idx0 >= 8 && idx0 < 12
-				l	r8,	VXR8 + idx0 - 8
-				st	r8,	[er10]
+				l	r10,	VXR8 + idx0 - 8
+				st	r10,	[er8]
 			else
-				st	rn,	[er10]
+				st	rn,	[er8]
 			endif
-			l	r8,	_PSW
+			l	r10,	_PSW
 		else
-			pop	er10
-			mov	r8,	psw
-			add	er10,	erm
+			mov	r10,	psw
+			pop	er8
+			add	er8,	erm
 			if idx0 >= 8 && idx0 < 12
-				l	r9,	VXR8 + idx0 - 8
-				st	r9,	[er10]
+				l	r11,	VXR8 + idx0 - 8
+				st	r11,	[er8]
 			else
-				st	rn,	[er10]
+				st	rn,	[er8]
 			endif
 		endif
-		mov	psw,	r8
-		pop	er10
-		b	er10
+		mov	psw,	r10
+		fetch
 		idx0 set idx0 + 1
 	endm
 	idx1 set idx1 + 2
@@ -740,36 +721,35 @@ idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
-		mov	r8,	psw
+		mov	r10,	psw
 		if idx1 >= 8 && idx1 < 12
-			st	r8,	_PSW
-			pop	er10
-			l	er8,	VXR8 + idx1 - 8
-			add	er10,	er8
+			st	r10,	_PSW
+			pop	er8
+			l	er10,	VXR8 + idx1 - 8
+			add	er8,	er10
 			if idx0 == idx1
-				st	er8,	[er10]
+				st	er10,	[er8]
 			elseif idx0 >= 8 && idx0 < 12
-				l	er8,	VXR8 + idx0 - 8
-				st	er8,	[er10]
+				l	er10,	VXR8 + idx0 - 8
+				st	er10,	[er8]
 			else
-				st	ern,	[er10]
+				st	ern,	[er8]
 			endif
-			l	r8,	_PSW
+			l	r10,	_PSW
 		elseif idx0 >= 8 && idx0 < 12
-			st	r8,	_PSW
-			pop	er10
-			add	er10,	erm
-			l	er8,	VXR8 + idx0 - 8
-			st	er8,	[er10]
-			l	r8,	_PSW
+			st	r10,	_PSW
+			pop	er8
+			add	er8,	erm
+			l	er10,	VXR8 + idx0 - 8
+			st	er10,	[er8]
+			l	r10,	_PSW
 		else
-			pop	er10
-			add	er10,	erm
-			st	ern,	[er10]
+			pop	er8
+			add	er8,	erm
+			st	ern,	[er8]
 		endif
-		mov	psw,	r8
-		pop	er10
-		b	er10
+		mov	psw,	r10
+		fetch
 		idx0 set idx0 + 2
 	endm
 	idx1 set idx1 + 2
@@ -779,15 +759,14 @@ endm
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 	if idx0 >= 8 && idx0 < 12
-		mov	r11,	psw
-		l	r10,	VXR8 + idx0 - 8
-		mov	psw,	r11
-		st	r10,	[ea]
+		mov	r10,	psw
+		l	r8,	VXR8 + idx0 - 8
+		mov	psw,	r10
+		st	r8,	[ea]
 	else
 		st	rn,	[ea]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -795,15 +774,14 @@ endm
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 	if idx0 >= 8 && idx0 < 12
-		mov	r11,	psw
-		l	r10,	VXR8 + idx0 - 8
-		mov	psw,	r11
-		st	r10,	[ea+]
+		mov	r10,	psw
+		l	r8,	VXR8 + idx0 - 8
+		mov	psw,	r10
+		st	r8,	[ea+]
 	else
 		st	rn,	[ea+]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -818,8 +796,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	else
 		st	ern,	[ea]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -834,8 +811,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	else
 		st	ern,	[ea+]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -852,8 +828,7 @@ irp xrn, <xr0, xr4, xr8, xr12>
 	else
 		st	xrn,	[ea]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 4
 endm
 
@@ -870,16 +845,14 @@ irp xrn, <xr0, xr4, xr8, xr12>
 	else
 		st	xrn,	[ea+]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 4
 endm
 
 ;ST QR0, [EA]
 _st_qr0_ea:
 	st	qr0,	[ea]
-	pop	er10
-	b	er10
+	fetch
 
 ;ST QR8, [EA]
 _st_qr8_ea:
@@ -890,14 +863,12 @@ _st_qr8_ea:
 	st	er8,	[ea+]
 	st	xr12,	[ea]
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;ST QR0, [EA+]
 _st_qr0_eap:
 	st	qr0,	[ea+]
-	pop	er10
-	b	er10
+	fetch
 
 ;ST QR8, [EA+]
 _st_qr8_eap:
@@ -908,34 +879,32 @@ _st_qr8_eap:
 	st	er8,	[ea+]
 	st	xr12,	[ea+]
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;L Rn, Disp16[ERm]
 idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
-		mov	r8,	psw
+		mov	r10,	psw
 		if idx1 >= 8 && idx1 < 12
-			st	r8,	_PSW
-			pop	er10
-			l	er8,	VXR8 + idx1 - 8
-			add	er10,	er8
-			l	r8,	_PSW
+			st	r10,	_PSW
+			pop	er8
+			l	er10,	VXR8 + idx1 - 8
+			add	er8,	er10
+			l	r10,	_PSW
 		else
-			pop	er10
-			add	er10,	erm
+			pop	er8
+			add	er8,	erm
 		endif
-		mov	psw,	r8
+		mov	psw,	r10
 		if idx0 >= 8 && idx0 < 12
-			l	r10,	[er10]
-			st	r10,	VXR8 + idx0 - 8
+			l	r8,	[er8]
+			st	r8,	VXR8 + idx0 - 8
 		else
-			l	rn,	[er10]
+			l	rn,	[er8]
 		endif
-		pop	er10
-		b	er10
+		fetch
 		idx0 set idx0 + 1
 	endm
 	idx1 set idx1 + 2
@@ -946,26 +915,25 @@ idx1 set 0
 irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set 0
 	irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
-		mov	r8,	psw
+		mov	r10,	psw
 		if idx1 >= 8 && idx1 < 12
-			st	r8,	_PSW
-			pop	er10
-			l	er8,	VXR8 + idx1 - 8
-			add	er10,	er8
-			l	r8,	_PSW
+			st	r10,	_PSW
+			pop	er8
+			l	er10,	VXR8 + idx1 - 8
+			add	er8,	er10
+			l	r10,	_PSW
 		else
-			pop	er10
-			add	er10,	erm
+			pop	er8
+			add	er8,	erm
 		endif
-		mov	psw,	r8
+		mov	psw,	r10
 		if idx0 >= 8 && idx0 < 12
-			l	er10,	[er10]
-			st	er10,	VXR8 + idx0 - 8
+			l	er8,	[er8]
+			st	er8,	VXR8 + idx0 - 8
 		else
-			l	ern,	[er10]
+			l	ern,	[er8]
 		endif
-		pop	er10
-		b	er10
+		fetch
 		idx0 set idx0 + 2
 	endm
 	idx1 set idx1 + 2
@@ -975,13 +943,12 @@ endm
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 	if idx0 >= 8 && idx0 < 12
-		l	r10,	[ea]
-		st	r10,	VXR8 + idx0 - 8
+		l	r8,	[ea]
+		st	r8,	VXR8 + idx0 - 8
 	else
 		l	rn,	[ea]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -989,13 +956,12 @@ endm
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
 	if idx0 >= 8 && idx0 < 12
-		l	r10,	[ea+]
-		st	r10,	VXR8 + idx0 - 8
+		l	r8,	[ea+]
+		st	r8,	VXR8 + idx0 - 8
 	else
 		l	rn,	[ea+]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -1003,13 +969,12 @@ endm
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
-		l	er10,	[ea]
-		st	er10,	VXR8 + idx0 - 8
+		l	er8,	[ea]
+		st	er8,	VXR8 + idx0 - 8
 	else
 		l	ern,	[ea]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -1017,13 +982,12 @@ endm
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	if idx0 >= 8 && idx0 < 12
-		l	er10,	[ea+]
-		st	er10,	VXR8 + idx0 - 8
+		l	er8,	[ea+]
+		st	er8,	VXR8 + idx0 - 8
 	else
 		l	ern,	[ea+]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -1037,8 +1001,7 @@ irp xrn, <xr0, xr4, xr8, xr12>
 	else
 		l	xrn,	[ea]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 4
 endm
 
@@ -1052,53 +1015,42 @@ irp xrn, <xr0, xr4, xr8, xr12>
 	else
 		l	xrn,	[ea+]
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 4
 endm
 
 ;L QR0, [EA]
 _l_qr0_ea:
 	l	qr0,	[ea]
-	pop	er10
-	b	er10
+	fetch
 
 ;L QR8, [EA]
 _l_qr8_ea:
 	l	qr8,	[ea]
 	st	er8,	VER8
 	st	er10,	VER10
-	pop	er10
-	b	er10
+	fetch
 
 ;L QR0, [EA+]
 _l_qr0_eap:
 	l	qr0,	[ea+]
-	pop	er10
-	b	er10
+	fetch
 
 ;L QR8, [EA+]
 _l_qr8_eap:
 	l	qr8,	[ea+]
 	st	er8,	VER8
 	st	er10,	VER10
-	pop	er10
-	b	er10
-
-;example for a virtual instruction handler:
-_nop:
-	pop	er10	;1 cycle. Stack operation doesn't set flags.
-	b	er10	;2 cycles. Minimum extra cycles count possible in each virtual instruction handler is 3. An alternate in SMALL model is using POP PC, which also takes 3 cycles.
+	fetch
 
 ;Bcond addr
 bcond_handler macro binvcond
 	local skip
-	pop	er10
+	pop	er8
 	binvcond	skip
-	mov	sp,	er10
+	mov	sp,	er8
 skip:
-	pop	er10
-	b	er10
+	fetch
 endm
 
 irp binvcond, <blt, bge, ble, bgt, blts, bges, bles, bgts, beq, bne, bov, bnv, bns, bps>
@@ -1107,10 +1059,9 @@ endm
 
 ;jump to the same segment
 _bal:
-	pop	er10
-	mov	sp,	er10
-	pop	er10
-	b	er10
+	pop	er8
+	mov	sp,	er8
+	fetch
 
 ;B ERn
 idx0 set 0
@@ -1121,8 +1072,7 @@ irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 		mov	psw,	r10
 	endif
 	mov	sp,	ern
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 	
@@ -1131,8 +1081,7 @@ endm
 _b:
 	mov	er8,	sp
 	swi	#1
-	pop	er10
-	b	er10
+	fetch
 
 _bl:
 	mov	r10,	psw
@@ -1144,8 +1093,7 @@ _bl:
 	mov	psw,	r10
 	mov	er8,	sp
 	swi	#1
-	pop	er10
-	b	er10
+	fetch
 
 ;BL ERn
 idx0 set 0
@@ -1160,8 +1108,7 @@ irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 	endif
 	mov	psw,	r10
 	mov	sp,	ern
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -1171,8 +1118,7 @@ _rt:
 	mov	r9,	#byte2 VLR
 	mov	psw,	r10
 	swi	#1
-	pop	er10
-	b	er10
+	fetch
 
 _syscall:
 	mov	r8,	psw
@@ -1201,8 +1147,7 @@ _syscall:
 	mov	r9,	#byte2 VLR
 	mov	psw,	r10
 	swi	#1
-	pop	er10
-	b	er10
+	fetch
 
 ;VDSR <- ERn
 idx0 set 0
@@ -1215,8 +1160,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	endif
 	mov	psw,	r10
 	swi	#2
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -1224,8 +1168,7 @@ endm
 _mov_dsr_imm16:
 	pop	er8
 	swi	#2
-	pop	er10
-	b	er10
+	fetch
 
 ; ;PUSH ELR
 ; _push_elr:
@@ -1234,8 +1177,7 @@ _mov_dsr_imm16:
 ; 	push	elr
 ; 	mov	er8,	sp
 ; 	mov	sp,	er10
-; 	pop	er10
-; 	b	er10
+; 	fetch
 
 ; ;PUSH EPSW
 ; _push_epsw:
@@ -1244,8 +1186,7 @@ _mov_dsr_imm16:
 ; 	push	epsw
 ; 	mov	er8,	sp
 ; 	mov	sp,	er10
-; 	pop	er10
-; 	b	er10
+; 	fetch
 
 ;PUSH LR
 _push_lr:
@@ -1261,8 +1202,7 @@ _push_lr:
 	st	er8,	VSP
 	l	r8,	_PSW
 	mov	psw,	r8
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH EA
 _push_ea:
@@ -1275,8 +1215,7 @@ _push_ea:
 	mov	er8,	sp
 	st	er8,	VSP
 	mov	sp,	er10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP EA
 _pop_ea:
@@ -1289,8 +1228,7 @@ _pop_ea:
 	mov	er8,	sp
 	st	er8,	VSP
 	mov	sp,	er10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP PSW
 _pop_psw:
@@ -1299,8 +1237,7 @@ _pop_psw:
 	add	er8,	#2
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP LR
 _pop_lr:
@@ -1316,8 +1253,7 @@ _pop_lr:
 	mov	er8,	sp
 	st	er8,	VSP
 	mov	sp,	er10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP PC
 _pop_pc:
@@ -1330,8 +1266,7 @@ _pop_pc:
 	add	er8,	#4
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH Rn
 idx0 set 0
@@ -1345,8 +1280,7 @@ irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 	st	rn,	[er8]
 	st	er8,	VSP
 	mov	psw,	r11
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -1366,8 +1300,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	endif
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -1381,8 +1314,7 @@ _push_xr0:
 	st	er0,	[er8]
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH XR4
 _push_xr4:
@@ -1394,8 +1326,7 @@ _push_xr4:
 	st	er4,	[er8]
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH XR8
 _push_xr8:
@@ -1411,8 +1342,7 @@ _push_xr8:
 	st	er8,	VSP
 	l	r10,	_PSW
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH XR12
 _push_xr12:
@@ -1424,8 +1354,7 @@ _push_xr12:
 	st	er12,	[er8]
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH QR0
 _push_qr0:
@@ -1438,8 +1367,7 @@ _push_qr0:
 	mov	er8,	sp
 	mov	sp,	er10
 	st	er8,	VSP
-	pop	er10
-	b	er10
+	fetch
 
 ;PUSH QR8
 _push_qr8:
@@ -1458,8 +1386,7 @@ _push_qr8:
 	st	er8,	VSP
 	l	r8,	_PSW
 	mov	psw,	r8
-	pop	er10
-	b	er10
+	fetch
 
 ;POP Rn
 idx0 set 0
@@ -1473,8 +1400,7 @@ irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
 	add	er8,	#2
 	st	er8,	VSP
 	mov	psw,	r11
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 1
 endm
 
@@ -1500,8 +1426,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 		st	er8,	VSP
 		mov	psw,	r10
 	endif
-	pop	er10
-	b	er10
+	fetch
 	idx0 set idx0 + 2
 endm
 
@@ -1515,8 +1440,7 @@ _pop_xr0:
 	add	er8,	#2
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP XR4
 _pop_xr4:
@@ -1528,8 +1452,7 @@ _pop_xr4:
 	add	er8,	#2
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP XR8
 _pop_xr8:
@@ -1545,8 +1468,7 @@ _pop_xr8:
 	mov	er8,	sp
 	mov	sp,	er10
 	st	er8,	VSP
-	pop	er10
-	b	er10
+	fetch
 
 ;POP XR12
 _pop_xr12:
@@ -1558,8 +1480,7 @@ _pop_xr12:
 	add	er8,	#2
 	st	er8,	VSP
 	mov	psw,	r10
-	pop	er10
-	b	er10
+	fetch
 
 ;POP QR0
 _pop_qr0:
@@ -1572,8 +1493,7 @@ _pop_qr0:
 	mov	er8,	sp
 	mov	sp,	er10
 	st	er8,	VSP
-	pop	er10
-	b	er10
+	fetch
 
 ;POP QR8
 _pop_qr8:
@@ -1590,5 +1510,4 @@ _pop_qr8:
 	mov	er8,	sp
 	mov	sp,	er10
 	st	er8,	VSP
-	pop	er10
-	b	er10
+	fetch
