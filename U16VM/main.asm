@@ -43,6 +43,9 @@ VM_RUNNING	EQU	0900Fh
 ;register backup for interrupt handlers
 TMP	EQU	09030h
 
+;stack mamory reserved for external storage access
+LOCAL_STACK	EQU	09100h
+
 ;user-registered exception handler
 ;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
 _EXCEPTION_HANDLER	EQU	09040h
@@ -56,6 +59,9 @@ extrn code	:	vmem_byte_store
 extrn code	:	vmem_word_store
 extrn code	:	vmem_byte_load
 extrn code	:	vmem_word_load
+
+extrn number	:	EXCEPTION_STACK_OVERFLOW
+extrn number	:	EXCEPTION_STACK_UNDERFLOW
 
 ;helper function to call a pointer in stack
 __stack_call:
@@ -112,14 +118,9 @@ vstack_load_store macro isload, regsize, regidx
 	rt
 
 overflow:
-	mov	er0,	er8
-	if regidx == 12
-		sub	r0,	r12
-		subc	r1,	r13
-	else
-		sub	r0,	r14
-		subc	r1,	r15
-	endif
+	add	sp,	#-2
+	pop	er0
+	mov	er0,	er0
 	bps	_underflow
 	st	er2,	TMP + 2
 	l	er0,	SS_END
@@ -197,7 +198,8 @@ external:
 	di
 	mov	er0,	er8
 	mov	er10,	sp
-	l	er8,	VSP
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
 	mov	sp,	er8
 	push	lr
 	if isload
@@ -268,6 +270,68 @@ __vstack_word_store_bp:
 __vstack_word_store_fp:
 	vstack_load_store 0, 2, 14
 
+;helper function for `ADD SP, #imm16` instruction
+__vstack_vsp_addition:
+	mov	r10,	psw
+	st	r10,	_PSW
+	pop	er8
+	l	er10,	VSP
+	add	er8,	er10
+	l	er10,	SS_START
+	cmp	er8,	er10
+	blt	vsp_add_overflow
+	l	er10,	SS_END
+	cmp	er8,	er10
+	bge	vsp_add_underflow
+	st	er8,	VSP
+	l	r10,	_PSW
+	mov	psw,	r10
+	rt
+
+vsp_add_overflow:
+	st	er0,	TMP
+	st	er2,	TMP + 2
+	add	sp,	#-2
+	pop	er0
+	mov	er0,	er0
+	bps	_vsp_add_underflow
+	l	er0,	SS_END
+	l	er2,	VSP + 2
+	sub	r0,	r10
+	subc	r1,	r11
+vsp_add_loop1:
+	add	er2,	#-1
+	add	er8,	er0
+	cmp	er8,	er10
+	blt	vsp_add_loop1
+	st	er8,	VSP
+	st	er2,	VSP + 2
+	l	er0,	TMP
+	l	er2,	TMP + 2
+	l	r10,	_PSW
+	mov	psw,	r10
+	rt
+
+_vsp_add_underflow:
+	l	er10,	SS_END
+vsp_add_underflow:
+	l	er0,	SS_START
+	l	er2,	VSP + 2
+	sub	r0,	r10
+	subc	r1,	r11
+vsp_add_loop2:
+	add	er2,	#1
+	add	er8,	er0
+	cmp	er8,	er10
+	bge	vsp_add_loop2
+	st	er8,	VSP
+	st	er2,	VSP + 2
+	l	er0,	TMP
+	l	er2,	TMP + 2
+	l	r10,	_PSW
+	mov	psw,	r10
+	rt
+
 ;SWI 0 handler
 ;raise exceptions
 ;in: er0-exception code er2-argument
@@ -296,7 +360,8 @@ default_handler:
 ;Change current code segment
 ;in: er8-pointer to target virtual address
 _SWI_1:
-	l	er10,	VSP
+	mov	r10,	#byte1 LOCAL_STACK
+	mov	r11,	#byte2 LOCAL_STACK
 	mov	sp,	er10
 	push	ea
 	push	xr0
@@ -321,19 +386,28 @@ do_csr_switch:
 	rti
 
 ;SWI 2 handler
-;Change current data segment
-;in: er8-target data segment
+;Change current data/stack segment
+;in: er8-target data/stack segment
 _SWI_2:
+	tb	r9.7
+	bne	ssr_switch
 	l	er10,	VDSR
 	cmp	er8,	er10
 	bne	do_dsr_switch
+	rti
+
+ssr_switch:
+	l	er10,	VSSR
+	cmp	er8,	er10
+	bne	do_ssr_switch
 	rti
 
 do_dsr_switch:
 	st	er8,	VDSR
 	mov	er8,	sp
 	st	er8,	TMP
-	l	er8,	VSP
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
 	mov	sp,	er8
 	push	ea
 	push	xr0
@@ -346,6 +420,127 @@ do_dsr_switch:
 	pop	ea
 	mov	sp,	er10
 	rti
+
+do_ssr_switch:
+	st	er8,	VSSR
+	mov	er8,	sp
+	st	er8,	TMP
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	sp,	er8
+	push	ea
+	push	xr0
+	;calls a function to save and load the target stack segment from external storage.
+	mov	er0,	er10
+	l	er2,	VSSR
+	l	er8,	VSP
+	l	er10,	TMP
+	bl	reload_stack_segment
+	pop	xr0
+	pop	ea
+	mov	sp,	er10
+	rti
+
+;SWI 3 handler
+;Check stack overflow/underflow
+;out: er8-low 16 bits of vsp
+_SWI_3:
+	l	er8,	VSP
+	l	er10,	SS_START
+	cmp	er8,	er10
+	blt	ss_overflow
+	l	er10,	SS_END
+	cmp	er8,	er10
+	bge	ss_underflow
+	l	er8,	VSP + 2
+	l	er10,	VSSR
+	cmp	er8,	er10
+	bne	do_ssr_switch
+	l	er8,	VSP
+	rti
+
+ss_overflow:
+	mov	er8,	sp
+	st	er8,	TMP
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	sp,	er8
+	push	ea
+	push	xr0
+	l	er8,	VSP
+	l	er0,	SS_END
+	l	er2,	VSP + 2
+	sub	r0,	r10
+	subc	r1,	r11
+vstack_fix_loop1:
+	add	er2,	#-1
+	add	er8,	er0
+	cmp	er8,	er10
+	blt	vstack_fix_loop1
+	st	er8,	VSP
+	st	er2,	VSP + 2
+	l	er0,	VSSR
+	cmp	er2,	er0
+	beq	vstack_fix_retn
+	tb	r3.7
+	beq	_vstack_overflow
+	st	er2,	VSSR
+	bl	reload_stack_segment
+
+vstack_fix_retn:
+	pop	xr0
+	pop	ea
+	l	er10,	TMP
+	mov	sp,	er10
+	rti
+
+ss_underflow:
+	mov	er8,	sp
+	st	er8,	TMP
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	sp,	er8
+	push	ea
+	push	xr0
+	l	er8,	VSP
+	l	er0,	SS_START
+	l	er2,	VSP + 2
+	sub	r0,	r10
+	subc	r1,	r11
+vstack_fix_loop2:
+	add	er2,	#1
+	add	er8,	er0
+	cmp	er8,	er10
+	bge	vstack_fix_loop2
+	st	er8,	VSP
+	st	er2,	VSP + 2
+	l	er0,	VSSR
+	cmp	er2,	er0
+	beq	vstack_fix_retn
+	tb	r3.7
+	beq	_vstack_underflow
+	st	er2,	VSSR
+	bl	reload_stack_segment
+	bal	vstack_fix_retn
+
+_vstack_overflow:
+	mov	r0,	#byte1 EXCEPTION_STACK_OVERFLOW
+	mov	r1,	#byte2 EXCEPTION_STACK_OVERFLOW
+	bal	vstack_fix_raise_exception
+
+_vstack_underflow:
+	mov	r0,	#byte1 EXCEPTION_STACK_UNDERFLOW
+	mov	r1,	#byte2 EXCEPTION_STACK_UNDERFLOW
+
+vstack_fix_raise_exception:
+	push	elr,epsw
+	swi	#0
+	pop	r0
+	mov	epsw,	r0
+	pop	xr0
+	mov	elr,	er0
+	mov	ecsr,	r2
+	bal	vstack_fix_retn
 
 ;VM instruction handler segment
 cseg #1 at 00000h
@@ -605,14 +800,7 @@ endm
 
 ;ADD SP, #imm16
 _add_sp_imm:
-	mov	r8,	psw
-	st	r8,	_PSW
-	pop	er10
-	l	er8,	VSP
-	add	er8,	er10
-	st	er8,	VSP
-	l	r8,	_PSW
-	mov	psw,	r8
+	bl	__vstack_vsp_addition
 	fetch
 
 ;DEC [EA]
@@ -1680,7 +1868,7 @@ _syscall:
 	swi	#1
 	fetch
 
-;VDSR <- ERn
+;VDSR/VSSR <- ERn
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	mov	r10,	psw
@@ -1695,7 +1883,7 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set idx0 + 2
 endm
 
-;VDSR <- imm16
+;VDSR/VSSR <- imm16
 _mov_dsr_imm16:
 	pop	er8
 	swi	#2
@@ -1721,9 +1909,9 @@ _mov_dsr_imm16:
 
 ;PUSH LR
 _push_lr:
-	mov	r8,	psw
-	st	r8,	_PSW
-	l	er8,	VSP
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
 	add	er8,	#-2
 	l	er10,	VLCSR
 	st	er10,	[er8]
@@ -1731,15 +1919,13 @@ _push_lr:
 	l	er10,	VLR
 	st	er10,	[er8]
 	st	er8,	VSP
-	l	r8,	_PSW
-	mov	psw,	r8
+	l	r10,	_PSW
+	mov	psw,	r10
 	fetch
 
 ;PUSH EA
 _push_ea:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
 	push	ea
@@ -1750,9 +1936,7 @@ _push_ea:
 
 ;POP EA
 _pop_ea:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	ea
@@ -1763,7 +1947,7 @@ _pop_ea:
 
 ;POP PSW
 _pop_psw:
-	l	er8,	VSP
+	swi	#3
 	l	r10,	[er8]
 	add	er8,	#2
 	st	er8,	VSP
@@ -1772,9 +1956,7 @@ _pop_psw:
 
 ;POP LR
 _pop_lr:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	er8
@@ -1788,9 +1970,7 @@ _pop_lr:
 
 ;POP PC
 _pop_pc:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	swi	#1
 	mov	r10,	psw
 	l	er8,	VSP
@@ -1802,8 +1982,8 @@ _pop_pc:
 ;PUSH Rn
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+	swi	#3
 	mov	r11,	psw
-	l	er8,	VSP
 	if idx0 >= 8 && idx0 < 12
 		l	r10,	VXR8 + idx0 - 8
 	endif
@@ -1818,8 +1998,8 @@ endm
 ;PUSH ERn
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	swi	#3
 	mov	r10,	psw
-	l	er8,	VSP
 	add	er8,	#-2
 	if idx0 >= 8 && idx0 < 12
 		st	r10,	_PSW
@@ -1835,63 +2015,36 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set idx0 + 2
 endm
 
-;PUSH XR0
-_push_xr0:
-	mov	r10,	psw
-	l	er8,	VSP
-	add	er8,	#-2
-	st	er2,	[er8]
-	add	er8,	#-2
-	st	er0,	[er8]
+;PUSH XRn
+idx0 set 0
+irp xrn, <xr0, xr4, xr8, xr12>
+	swi	#3
+	if idx0 == 8
+		mov	r10,	psw
+		st	r10,	_PSW
+		add	er8,	#-2
+		l	er10,	VER10
+		st	er10,	[er8]
+		add	er8,	#-2
+		l	er10,	VER8
+		st	er10,	[er8]
+		l	r10,	_PSW
+		mov	psw,	r10
+	else
+		mov	er10,	sp
+		mov	sp,	er8
+		push	xrn
+		mov	er8,	sp
+		mov	sp,	er10
+	endif
 	st	er8,	VSP
-	mov	psw,	r10
 	fetch
-
-;PUSH XR4
-_push_xr4:
-	mov	r10,	psw
-	l	er8,	VSP
-	add	er8,	#-2
-	st	er6,	[er8]
-	add	er8,	#-2
-	st	er4,	[er8]
-	st	er8,	VSP
-	mov	psw,	r10
-	fetch
-
-;PUSH XR8
-_push_xr8:
-	mov	r10,	psw
-	st	r10,	_PSW
-	l	er8,	VSP
-	add	er8,	#-2
-	l	er10,	VER10
-	st	er10,	[er8]
-	add	er8,	#-2
-	l	er10,	VER8
-	st	er10,	[er8]
-	st	er8,	VSP
-	l	r10,	_PSW
-	mov	psw,	r10
-	fetch
-
-;PUSH XR12
-_push_xr12:
-	mov	r10,	psw
-	l	er8,	VSP
-	add	er8,	#-2
-	st	er14,	[er8]
-	add	er8,	#-2
-	st	er12,	[er8]
-	st	er8,	VSP
-	mov	psw,	r10
-	fetch
+	idx0 set idx0 + 4
+endm
 
 ;PUSH QR0
 _push_qr0:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
 	push	qr0
@@ -1902,9 +2055,9 @@ _push_qr0:
 
 ;PUSH QR8
 _push_qr8:
-	mov	r8,	psw
-	st	r8,	_PSW
-	l	er8,	VSP
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
 	mov	er10,	sp
 	mov	sp,	er8
 	push	xr12
@@ -1915,15 +2068,15 @@ _push_qr8:
 	mov	er8,	sp
 	mov	sp,	er10
 	st	er8,	VSP
-	l	r8,	_PSW
-	mov	psw,	r8
+	l	r10,	_PSW
+	mov	psw,	r10
 	fetch
 
 ;POP Rn
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
+	swi	#3
 	mov	r11,	psw
-	l	er8,	VSP
 	l	rn,	[er8]
 	if idx0 >= 8 && idx0 < 12
 		st	r10,	VXR8 + idx0 - 8
@@ -1938,10 +2091,8 @@ endm
 ;POP ERn
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	swi	#3
 	if idx0 >= 8 && idx0 < 12
-		mov	r10,	psw
-		l	er8,	VSP
-		mov	psw,	r10
 		mov	er10,	sp
 		mov	sp,	er8
 		pop	er8
@@ -1951,7 +2102,6 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 		st	er8,	VSP
 	else
 		mov	r10,	psw
-		l	er8,	VSP
 		l	ern,	[er8]
 		add	er8,	#2
 		st	er8,	VSP
@@ -1961,63 +2111,30 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set idx0 + 2
 endm
 
-;POP XR0
-_pop_xr0:
-	mov	r10,	psw
-	l	er8,	VSP
-	l	er0,	[er8]
-	add	er8,	#2
-	l	er2,	[er8]
-	add	er8,	#2
-	st	er8,	VSP
-	mov	psw,	r10
-	fetch
-
-;POP XR4
-_pop_xr4:
-	mov	r10,	psw
-	l	er8,	VSP
-	l	er4,	[er8]
-	add	er8,	#2
-	l	er6,	[er8]
-	add	er8,	#2
-	st	er8,	VSP
-	mov	psw,	r10
-	fetch
-
-;POP XR8
-_pop_xr8:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+;POP XRn
+idx0 set 0
+irp xrn, <xr0, xr4, xr8, xr12>
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
-	pop	er8
-	st	er8,	VER8
-	pop	er8
-	st	er8,	VER10
+	if idx0 == 8
+		pop	er8
+		st	er8,	VER8
+		pop	er8
+		st	er8,	VER10
+	else
+		pop	xrn
+	endif
 	mov	er8,	sp
 	mov	sp,	er10
 	st	er8,	VSP
 	fetch
-
-;POP XR12
-_pop_xr12:
-	mov	r10,	psw
-	l	er8,	VSP
-	l	er12,	[er8]
-	add	er8,	#2
-	l	er14,	[er8]
-	add	er8,	#2
-	st	er8,	VSP
-	mov	psw,	r10
-	fetch
+	idx0 set idx0 + 4
+endm
 
 ;POP QR0
 _pop_qr0:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	qr0
@@ -2028,9 +2145,7 @@ _pop_qr0:
 
 ;POP QR8
 _pop_qr8:
-	mov	r10,	psw
-	l	er8,	VSP
-	mov	psw,	r10
+	swi	#3
 	mov	er10,	sp
 	mov	sp,	er8
 	pop	er8
