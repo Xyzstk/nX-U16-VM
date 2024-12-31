@@ -2,14 +2,18 @@ type(ML620909)
 model	large
 
 ;U16 Virtual Machine for running external code
+
 ;General design:
 ;Virtual Instruction Pointer: SP	Working Register: XR8 (generally xr8 is less accessed than xr12 since they are used for stack addressing, or xr0 since they are used for passing arguments.)
-;using 16-bit code segment register and data segment register (for virtual memory accessing)
-;emulate VCSR, VDSR, VLCSR, VLR, VXR8 and VSP in internal ram
-;separate internal ram into code segment, virtual memory segment, local ram segment and stack segment.
+;using 16-bit code segment register, 15-bit data segment register (for virtual memory accessing) and 15-bit stack segment register (for stack virtualization).
+;emulate VCSR, VDSR, VSSR, VLCSR, VLR, VXR8 and VSP in internal ram. To make virtual stack addressing easier, each word-sized general register (ERn) is equipped with an additional word-sized register (SERn) to hold stack segment index. 
+;separate internal ram into code segment, virtual memory segment, local ram segment and stack segment. The memory map for each user program could be customized.
 ;use 32-bit virtual ram pointer, where low 16 bits represents the physical address in the virtual memory segment of the internal ram. Virtual memory access should be prefixed to identify data segment. Local ram accessing should not be prefixed since segment switching is handled in prefix.
+;use 32-bit virtual stack pointer, where low 16 bits represents the physical address in the stack segment of the internal ram. 8 bytes of ram should be reserved at the beginning and end of the stack segment to avoid overflow/underflow.
 ;use 32-bit instruction pointer, where low 16 bits point to the physical address in the code segment of the internal ram. Conditional branch and register calls only allows jumping to the same segment. Use long jump to switch segment.
-;use SWI0 to handle exceptions. SWI1 for switching code segment, SWI2 for switching data segment.
+;To make memory addressing easier, MSB of 16-bit form data segment register is fixed to 0, while stack segment register fixed to 1.
+;use SWI0 to handle exceptions. SWI1 for switching code segment, SWI2 for switching data/stack segment on load/store and SWI3 for switching stack segment on push/pop.
+;`L/ST Rn/ERn, Disp16[BP/FP]` instructions are implemented for accessing virtual stack memory without having to switch stack segment. 
 ;implement malloc and free to handle virtual memory allocating. malloc should return a 32-bit pointer pointing to the virtual memory. Do not use malloc for accessing reserved local ram.
 ;When doing data transfer between data segments, use local ram as buffer. Do not directly transfer between different segments since memory access to a different data segment will reload the whole virtual memory segment from external storage.
 ;it's recommended to cache frequently accessed data in local ram segment.
@@ -1777,6 +1781,7 @@ irp binvcond, <blt, bge, ble, bgt, blts, bges, bles, bgts, beq, bne, bov, bnv, b
 	bcond_handler binvcond
 endm
 
+;BAL addr
 ;jump to the same segment
 _bal:
 	pop	er8
@@ -1796,12 +1801,14 @@ irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 	idx0 set idx0 + 2
 endm
 
+;B Cadr
 ;long jump
 _b:
 	mov	er8,	sp
 	swi	#1
 	fetch
 
+;BL Cadr
 _bl:
 	mov	r10,	psw
 	l	er8,	VCSR
@@ -1831,6 +1838,7 @@ irp ern, <er0, er2, er4, er6, er8, er8, er12, er14>
 	idx0 set idx0 + 2
 endm
 
+;RT
 _rt:
 	mov	r10,	psw
 	mov	r8,	#byte1 VLR
@@ -1839,6 +1847,8 @@ _rt:
 	swi	#1
 	fetch
 
+;SYSCALL Cadr
+;calls native function in the ROM
 _syscall:
 	mov	r8,	psw
 	st	r8,	_PSW
