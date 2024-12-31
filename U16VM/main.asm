@@ -15,14 +15,24 @@ model	large
 ;it's recommended to cache frequently accessed data in local ram segment.
 
 ;virtual registers
-VLR	EQU	09000h
-VLCSR	EQU	09002h
-VCSR	EQU	09004h
-VDSR	EQU	09006h
-VSP	EQU	09008h
-VXR8	EQU	0900Ah
-VER8	EQU	0900Ah
-VER10	EQU	0900Ch
+VXR8	EQU	09000h
+VER8	EQU	09000h
+VER10	EQU	09002h
+VLR	EQU	09004h
+VLCSR	EQU	09006h
+VCSR	EQU	09008h
+VDSR	EQU	0900Ah
+VSSR	EQU	0900Ch
+VSREGS	EQU	09010h
+VSP	EQU	09020h
+
+;physical memory map info
+CS_START	EQU	09024h
+CS_END	EQU	09026h
+DS_START	EQU	09028h
+DS_END	EQU	0902Ah
+SS_START	EQU	0902Ch
+SS_END	EQU	0902Eh
 
 ;PSW backup
 _PSW	EQU	0900Eh
@@ -31,20 +41,232 @@ _PSW	EQU	0900Eh
 VM_RUNNING	EQU	0900Fh
 
 ;register backup for interrupt handlers
-TMP	EQU	09010h
+TMP	EQU	09030h
 
 ;user-registered exception handler
 ;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
-_EXCEPTION_HANDLER	EQU	09020h
-_EXCEPTION_HANDLER_CSR	EQU	09022h
-_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09023h	;boolean value
+_EXCEPTION_HANDLER	EQU	09040h
+_EXCEPTION_HANDLER_CSR	EQU	09042h
+_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09043h	;boolean value
 
 extrn code	:	reload_code_segment
 extrn code	:	reload_data_segment
+extrn code	:	reload_stack_segment
+extrn code	:	vmem_byte_store
+extrn code	:	vmem_word_store
+extrn code	:	vmem_byte_load
+extrn code	:	vmem_word_load
 
 ;helper function to call a pointer in stack
 __stack_call:
 	pop	pc
+
+;BP/FP addressing instructions are implemented here in case handler segment grows too large
+vstack_load_store macro isload, regsize, regidx
+	local overflow, _underflow, underflow, _external, external, loop1, loop2
+	if isload
+		mov	r10,	psw
+	endif
+	st	r10,	_PSW
+	st	er0,	TMP
+	if !isload
+		if regsize == 1
+			st	r8,	TMP + 4
+		else
+			st	er8,	TMP + 4
+		endif
+	endif
+	pop	er8
+	if regidx == 12
+		add	er8,	bp
+	else
+		add	er8,	fp
+	endif
+	l	er10,	SS_START
+	cmp	er8,	er10
+	blt	overflow
+	l	er10,	SS_END
+	cmp	er8,	er10
+	bge	underflow
+	l	er10,	VSREGS + regidx
+	l	er0,	VSSR
+	cmp	er10,	er0
+	bne	_external
+	if !isload
+		if regsize == 1
+			l	r0,	TMP + 4
+			st	r0,	[er8]
+		else
+			l	er0,	TMP + 4
+			st	er0,	[er8]
+		endif
+	endif
+	l	er0,	TMP
+	l	r10,	_PSW
+	mov	psw,	r10
+	if isload
+		l	r8,	[er8]
+	else
+		l	er8,	[er8]
+	endif
+	rt
+
+overflow:
+	mov	er0,	er8
+	if regidx == 12
+		sub	r0,	r12
+		subc	r1,	r13
+	else
+		sub	r0,	r14
+		subc	r1,	r15
+	endif
+	bps	_underflow
+	st	er2,	TMP + 2
+	l	er0,	SS_END
+	l	er2,	VSREGS + regidx
+	sub	r0,	r10
+	subc	r1,	r11
+loop1:
+	add	er2,	#-1
+	add	er8,	er0
+	cmp	er8,	er10
+	blt	loop1
+	l	er0,	VSSR
+	cmp	er2,	er0
+	bne	external
+	if !isload
+		if regsize == 1
+			l	r0,	TMP + 4
+			st	r0,	[er8]
+		else
+			l	er0,	TMP + 4
+			st	er0,	[er8]
+		endif
+	endif
+	l	er0,	TMP
+	l	er2,	TMP + 2
+	l	r10,	_PSW
+	mov	psw,	r10
+	if isload
+		l	r8,	[er8]
+	else
+		l	er8,	[er8]
+	endif
+	rt
+
+_underflow:
+	l	er10,	SS_END
+underflow:
+	st	er2,	TMP + 2
+	l	er0,	SS_START
+	l	er2,	VSREGS + regidx
+	sub	r0,	r10
+	subc	r1,	r11
+loop2:
+	add	er2,	#1
+	add	er8,	er0
+	cmp	er8,	er10
+	bge	loop2
+	l	er0,	VSSR
+	cmp	er2,	er0
+	bne	external
+	if !isload
+		if regsize == 1
+			l	r0,	TMP + 4
+			st	r0,	[er8]
+		else
+			l	er0,	TMP + 4
+			st	er0,	[er8]
+		endif
+	endif
+	l	er0,	TMP
+	l	er2,	TMP + 2
+	l	r10,	_PSW
+	mov	psw,	r10
+	if isload
+		l	r8,	[er8]
+	else
+		l	er8,	[er8]
+	endif
+	rt
+
+_external:
+	st	er2,	TMP + 2
+	mov	er2,	er10
+external:
+	di
+	mov	er0,	er8
+	mov	er10,	sp
+	l	er8,	VSP
+	mov	sp,	er8
+	push	lr
+	if isload
+		if regsize == 1
+			bl	vmem_byte_load
+			mov	r8,	r0
+		else
+			bl	vmem_word_load
+			mov	er8,	er0
+		endif
+	else
+		if regsize == 1
+			l	r8,	TMP + 4
+			push	r8
+			bl	vmem_byte_store
+		else
+			l	er8,	TMP + 4
+			push	er8
+			bl	vmem_word_store
+		endif
+		add	sp,	#2
+	endif
+	pop	lr
+	mov	sp,	er10
+	l	er0,	TMP
+	l	er2,	TMP + 2
+	l	r10,	_PSW
+	mov	psw,	r10
+	if isload
+		if regsize == 1
+			mov	r8,	r8
+		else
+			mov	er8,	er8
+		endif
+	endif
+	rt
+endm
+
+;helper function for `L Rn, Disp16[BP]` instructions
+__vstack_byte_load_bp:
+	vstack_load_store 1, 1, 12
+
+;helper function for `L Rn, Disp16[FP]` instructions
+__vstack_byte_load_fp:
+	vstack_load_store 1, 1, 14
+
+;helper function for `L ERn, Disp16[BP]` instructions
+__vstack_word_load_bp:
+	vstack_load_store 1, 2, 12
+
+;helper function for `L ERn, Disp16[FP]` instructions
+__vstack_word_load_fp:
+	vstack_load_store 1, 2, 14
+
+;helper function for `ST Rn, Disp16[BP]` instructions
+__vstack_byte_store_bp:
+	vstack_load_store 0, 1, 12
+
+;helper function for `ST Rn, Disp16[FP]` instructions
+__vstack_byte_store_fp:
+	vstack_load_store 0, 1, 14
+
+;helper function for `ST ERn, Disp16[BP]` instructions
+__vstack_word_store_bp:
+	vstack_load_store 0, 2, 12
+
+;helper function for `ST ERn, Disp16[FP]` instructions
+__vstack_word_store_fp:
+	vstack_load_store 0, 2, 14
 
 ;SWI 0 handler
 ;raise exceptions
@@ -569,6 +791,74 @@ irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
 	idx0 set idx0 + 1
 endm
 
+;MOV ERn, SP
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	VSP
+		st	er8,	VXR8 + idx0 - 8
+	else
+		l	ern,	VSP
+	endif
+	l	er8,	VSP + 2
+	st	er8,	VSREGS + idx0
+	mov	psw,	r10
+	fetch
+	idx0 set idx0 + 2
+endm
+
+;MOV SP, ERm
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	VXR8 + idx0 - 8
+		st	er8,	VSP
+	else
+		st	ern,	VSP
+	endif
+	l	er8,	VSREGS + idx0
+	st	er8,	VSP + 2
+	mov	psw,	r10
+	fetch
+	idx0 set idx0 + 2
+endm
+
+;MOV ERn, VSERm
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	irp vserm, <0, 2, 4, 6, 8, 10, 12, 14>
+		mov	r10,	psw
+		if idx0 >= 8 && idx0 < 12
+			l	er8,	VSREGS + vserm
+			st	er8,	VXR8 + idx0 - 8
+		else
+			l	ern,	VSREGS + vserm
+		endif
+		mov	psw,	r10
+		fetch
+	endm
+	idx0 set idx0 + 2
+endm
+
+;MOV VSERn, ERm
+idx1 set 0
+irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
+	irp vsern, <0, 2, 4, 6, 8, 10, 12, 14>
+		if idx1 >= 8 && idx1 < 12
+			mov	r10,	psw
+			l	er8,	VXR8 + idx1 - 8
+			st	er8,	VSREGS + vsern
+			mov	psw,	r10
+		else
+			st	erm,	VSREGS + vsern
+		endif
+		fetch
+	endm
+	idx1 set idx1 + 2
+endm
+
 ;NEG Rn
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
@@ -786,6 +1076,62 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 		idx0 set idx0 + 2
 	endm
 	idx1 set idx1 + 2
+endm
+
+;ST Rn, Disp16[BP]
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	r8,	VXR8 + idx0 - 8
+	else
+		mov	r8,	rn
+	endif
+	bl	__vstack_byte_store_bp
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;ST Rn, Disp16[FP]
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	r8,	VXR8 + idx0 - 8
+	else
+		mov	r8,	rn
+	endif
+	bl	__vstack_byte_store_fp
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;ST ERn, Disp16[BP]
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	VXR8 + idx0 - 8
+	else
+		mov	er8,	ern
+	endif
+	bl	__vstack_word_store_bp
+	fetch
+	idx0 set idx0 + 2
+endm
+
+;ST ERn, Disp16[FP]
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	mov	r10,	psw
+	if idx0 >= 8 && idx0 < 12
+		l	er8,	VXR8 + idx0 - 8
+	else
+		mov	er8,	ern
+	endif
+	bl	__vstack_word_store_fp
+	fetch
+	idx0 set idx0 + 2
 endm
 
 ;ST Rn, Dadr
@@ -1043,6 +1389,58 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 		idx0 set idx0 + 2
 	endm
 	idx1 set idx1 + 2
+endm
+
+;L Rn, Disp16[BP]
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+	bl	__vstack_byte_load_bp
+	if idx0 >= 8 && idx0 < 12
+		st	r8,	VXR8 + idx0 - 8
+	else
+		mov	rn,	r8
+	endif
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;L Rn, Disp16[FP]
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15>
+	bl	__vstack_byte_load_fp
+	if idx0 >= 8 && idx0 < 12
+		st	r8,	VXR8 + idx0 - 8
+	else
+		mov	rn,	r8
+	endif
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;L ERn, Disp16[BP]
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	bl	__vstack_word_load_bp
+	if idx0 >= 8 && idx0 < 12
+		st	er8,	VXR8 + idx0 - 8
+	else
+		mov	ern,	er8
+	endif
+	fetch
+	idx0 set idx0 + 2
+endm
+
+;L ERn, Disp16[FP]
+idx0 set 0
+irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
+	bl	__vstack_word_load_fp
+	if idx0 >= 8 && idx0 < 12
+		st	er8,	VXR8 + idx0 - 8
+	else
+		mov	ern,	er8
+	endif
+	fetch
+	idx0 set idx0 + 2
 endm
 
 ;L Rn, Dadr
