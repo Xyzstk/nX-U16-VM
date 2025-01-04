@@ -17,6 +17,7 @@ model	large
 ;implement malloc and free to handle virtual memory allocating. malloc should return a 32-bit pointer pointing to the virtual memory. Do not use malloc for accessing reserved local ram.
 ;When doing data transfer between data segments, use local ram as buffer. Do not directly transfer between different segments since memory access to a different data segment will reload the whole virtual memory segment from external storage.
 ;it's recommended to cache frequently accessed data in local ram segment.
+;Allow user programs to register interrupt handlers. Emulate VECSR, VEPSW and VECPUSTAT (including physical ECSR:ELR, XR8, SP, VSSR, psw backup _PSW and VMFLAGS) in internal ram.
 
 ;virtual registers
 VXR8	EQU	09000h
@@ -41,20 +42,63 @@ SS_END	EQU	0902Eh
 ;PSW backup
 _PSW	EQU	0900Eh
 
-;A flag to identify if the cpu is running in virtualized mode
-VM_RUNNING	EQU	0900Fh
+;Flags indicating state of the virtual machine
+;bit0: running
+;bit1: NMI blocking
+VMFLAGS	EQU	0900Fh
+
+;Interrupt backup registers
+VECSR1	EQU	09030h
+VECSR2	EQU	09040h
+VECSR3	EQU	09050h
+
+VECPUSTAT1	EQU	09032h
+VECPUSTAT2	EQU	09042h
+VECPUSTAT3	EQU	09052h
+
+VESSR1	EQU 09032h
+VESSR2	EQU 09042h
+VESSR3	EQU 09052h
+
+VEPSWBAC1	EQU	09034h
+VEPSWBAC2	EQU	09044h
+VEPSWBAC3	EQU	09054h
+
+VEVMFLAGS1	EQU	09035h
+VEVMFLAGS2	EQU	09045h
+VEVMFLAGS3	EQU	09055h
+
+VESP1	EQU	09036h
+VESP2	EQU	09046h
+VESP3	EQU	09056h
+
+VEXR81	EQU	09038h
+VEXR82	EQU	09048h
+VEXR83	EQU	09058h
+
+VPELR1	EQU	0903Ch
+VPELR2	EQU	0904Ch
+VPELR3	EQU	0905Ch
+
+VPECSR1	EQU	0903Eh
+VPECSR2	EQU	0904Eh
+VPECSR3	EQU	0905Eh
+
+VEPSW1	EQU	0903Fh
+VEPSW2	EQU	0904Fh
+VEPSW3	EQU	0905Fh
 
 ;register backup for interrupt handlers
-TMP	EQU	09030h
+TMP	EQU	09060h
 
 ;stack mamory reserved for external storage access
 LOCAL_STACK	EQU	09100h
 
 ;user-registered exception handler
 ;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
-_EXCEPTION_HANDLER	EQU	09040h
-_EXCEPTION_HANDLER_CSR	EQU	09042h
-_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09043h	;boolean value
+_EXCEPTION_HANDLER	EQU	09070h
+_EXCEPTION_HANDLER_CSR	EQU	09072h
+_USE_CUSTOM_EXCEPTION_HANDLER	EQU	09073h	;boolean value
 
 extrn code	:	reload_code_segment
 extrn code	:	reload_data_segment
@@ -67,6 +111,23 @@ extrn code	:	vmem_word_load
 extrn number	:	EXCEPTION_STACK_OVERFLOW
 extrn number	:	EXCEPTION_STACK_UNDERFLOW
 
+__EnterIntBlkSection macro
+	di
+	sb	VMFLAGS.1
+endm
+
+__EnterNMIBlkSection macro
+	sb	VMFLAGS.1
+endm
+
+__LeaveNMIBlkSection macro
+	local leave
+	rb	VMFLAGS.1
+	bne	leave
+	sb	QWDT
+leave:
+endm
+
 ;helper function to call a pointer in stack
 __stack_call:
 	pop	pc
@@ -78,6 +139,7 @@ vstack_load_store macro isload, regsize, regidx
 		mov	r10,	psw
 	endif
 	st	r10,	_PSW
+	__EnterIntBlkSection
 	st	er0,	TMP
 	if !isload
 		if regsize == 1
@@ -112,6 +174,7 @@ vstack_load_store macro isload, regsize, regidx
 		endif
 	endif
 	l	er0,	TMP
+	__LeaveNMIBlkSection
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
@@ -150,6 +213,7 @@ loop1:
 	endif
 	l	er0,	TMP
 	l	er2,	TMP + 2
+	__LeaveNMIBlkSection
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
@@ -197,6 +261,7 @@ loop3:
 	endif
 	l	er0,	TMP
 	l	er2,	TMP + 2
+	__LeaveNMIBlkSection
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
@@ -210,7 +275,6 @@ _external:
 	st	er2,	TMP + 2
 	mov	er2,	er10
 external:
-	di
 	mov	er0,	er8
 	mov	er10,	sp
 	mov	r8,	#byte1 LOCAL_STACK
@@ -241,6 +305,7 @@ external:
 	mov	sp,	er10
 	l	er0,	TMP
 	l	er2,	TMP + 2
+	__LeaveNMIBlkSection
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
@@ -305,6 +370,7 @@ __vstack_vsp_addition:
 	rt
 
 vsp_add_overflow:
+	__EnterIntBlkSection
 	st	er0,	TMP
 	st	er2,	TMP + 2
 	add	sp,	#-2
@@ -324,6 +390,7 @@ vsp_add_loop1:
 	st	er2,	VSP + 2
 	l	er0,	TMP
 	l	er2,	TMP + 2
+	__LeaveNMIBlkSection
 	l	r10,	_PSW
 	mov	psw,	r10
 	rt
@@ -341,6 +408,9 @@ vsp_add_loop2:
 	bal	vsp_add_loop3
 
 vsp_add_underflow:
+	__EnterIntBlkSection
+	st	er0,	TMP
+	st	er2,	TMP + 2
 	l	er0,	SS_START
 	l	er2,	VSP + 2
 	sub	r0,	r10
@@ -354,6 +424,7 @@ vsp_add_loop3:
 	st	er2,	VSP + 2
 	l	er0,	TMP
 	l	er2,	TMP + 2
+	__LeaveNMIBlkSection
 	l	r10,	_PSW
 	mov	psw,	r10
 	rt
@@ -363,8 +434,7 @@ _padd_psub_helper macro symbol0, symbol1, symbol2, isadd, ern, regidx
 	if regidx < 8 || regidx >= 12
 		st	r8,	_PSW
 	endif
-	di
-	sb	VM_RUNNING.1
+	__EnterIntBlkSection
 	if regidx == 0
 		st	er2,	TMP
 		if isadd
@@ -413,8 +483,8 @@ endm
 
 pointer_arithmetic_fix macro isadd, ern, regidx
 	local ss_fix
-	local _do_ds_fix, do_ds_fix, ds_fix_loop1, ds_fix_loop2, ds_fix_nv, ds_retn
-	local _do_ss_fix, do_ss_fix, ss_fix_loop1, ss_fix_loop2, ss_fix_nv, ss_retn
+	local _do_ds_fix, do_ds_fix, ds_fix_loop1, ds_fix_loop2, ds_fix_nv
+	local _do_ss_fix, do_ss_fix, ss_fix_loop1, ss_fix_loop2, ss_fix_nv
 	mov	r8,	psw
 	and	r8,	#01001111b
 	if regidx >= 8 && regidx < 12
@@ -501,10 +571,7 @@ ds_fix_nv:
 	if regidx >= 8 && regidx < 12
 		l	er2,	TMP + 2
 	endif
-	rb	VM_RUNNING.1
-	bne	ds_retn
-	sb	QWDT
-ds_retn:
+	__LeaveNMIBlkSection
 	mov	psw,	r10
 	rt
 
@@ -546,10 +613,7 @@ ss_fix_nv:
 	if regidx >= 8 && regidx < 12
 		l	er2,	TMP + 2
 	endif
-	rb	VM_RUNNING.1
-	bne	ss_retn
-	sb	QWDT
-ss_retn:
+	__LeaveNMIBlkSection
 	mov	psw,	r10
 	rt
 endm
@@ -602,6 +666,71 @@ __longptr_fix_psub_ser12:
 __longptr_fix_psub_ser14:
 	pointer_arithmetic_fix 0, er14, 14
 
+;NMI handler
+_NMI:
+	tb	VMFLAGS.0
+	beq	nmi_default_handler
+	rb	VMFLAGS.1
+	beq	handle_nmi
+	rti
+
+handle_nmi:
+;save cpu state
+	st	er8,	VEXR82
+	st	er10,	VEXR82 + 2
+	mov	er8,	elr
+	mov	r10,	ecsr
+	mov	r11,	epsw
+	st	er8,	VPELR2
+	st	r10,	VPECSR2
+	st	r11,	VEPSW2
+	mov	er8,	sp
+	l	er10,	_PSW
+	st	er8,	VESP2
+	st	er10,	VEPSWBAC2
+	l	er8,	VCSR
+	l	er10,	VSSR
+	st	er8,	VECSR2
+	st	er10,	VESSR2
+;reserve 8 byte in vstack in case a stack operation is in progress
+	l	er8,	VSP
+	add	er8,	#-8
+	st	er8,	VSP
+
+	l	er8,	INT_VTABLE + 8
+	beq	nmi_default_handler_vm
+	mov	r8,	#byte1 (INT_VTABLE + 8)
+	mov	r9,	#byte2 (INT_VTABLE + 8)
+	swi	#1
+	b	_nop
+
+;fallback to default handler
+nmi_default_handler_vm:
+	mov	r8,	#5Ah
+wdt_clear_retry_vm:
+	st	r8,	WDTCON
+	tb	WDP
+	beq	wdt_clear_retry_vm
+	mov	r8,	#0A5h
+	st	r8,	WDTCON
+	l	er8,	VEXR82
+	l	er10,	VEXR82 + 2
+	rti
+	
+nmi_default_handler:
+	push	r0
+	mov	r0,	#5Ah
+wdt_clear_retry:
+	st	r0,	WDTCON
+	tb	WDP
+	beq	wdt_clear_retry
+	mov	r0,	#0A5h
+	st	r0,	WDTCON
+	pop	r0
+	rti
+
+;Kernel-reserved software interrupt handlers
+
 ;SWI 0 handler
 ;raise exceptions
 ;in: er0-exception code er2-argument
@@ -646,6 +775,7 @@ _SWI_1:
 	rti
 
 do_csr_switch:
+	__EnterNMIBlkSection
 	st	er10,	VCSR
 	;calls a function to load the target code segment from external storage to allocated region of the internal ram.
 	mov	er0,	er10
@@ -653,6 +783,7 @@ do_csr_switch:
 	pop	xr0
 	pop	ea
 	mov	sp,	er8
+	__LeaveNMIBlkSection
 	rti
 
 ;SWI 2 handler
@@ -673,6 +804,7 @@ ssr_switch:
 	rti
 
 do_dsr_switch:
+	__EnterNMIBlkSection
 	st	er8,	VDSR
 	mov	er8,	sp
 	st	er8,	TMP
@@ -689,9 +821,11 @@ do_dsr_switch:
 	pop	xr0
 	pop	ea
 	mov	sp,	er10
+	__LeaveNMIBlkSection
 	rti
 
 do_ssr_switch:
+	__EnterNMIBlkSection
 	st	er8,	VSSR
 	mov	er8,	sp
 	st	er8,	TMP
@@ -709,6 +843,7 @@ do_ssr_switch:
 	pop	xr0
 	pop	ea
 	mov	sp,	er10
+	__LeaveNMIBlkSection
 	rti
 
 ;SWI 3 handler
@@ -730,6 +865,7 @@ _SWI_3:
 	rti
 
 ss_overflow:
+	__EnterNMIBlkSection
 	mov	er8,	sp
 	st	er8,	TMP
 	mov	r8,	#byte1 LOCAL_STACK
@@ -762,9 +898,11 @@ vstack_fix_retn:
 	pop	ea
 	l	er10,	TMP
 	mov	sp,	er10
+	__LeaveNMIBlkSection
 	rti
 
 ss_underflow:
+	__EnterNMIBlkSection
 	mov	er8,	sp
 	st	er8,	TMP
 	mov	r8,	#byte1 LOCAL_STACK
@@ -1019,6 +1157,10 @@ insn_fn_impl macro fn
 	fetch
 endm
 
+;NOP
+_nop:
+	fetch
+
 insn_ern_erm add
 insn_rn_rm add
 insn_rn_imm8 add
@@ -1037,7 +1179,6 @@ insn_rn daa
 insn_rn das
 insn_misc di
 insn_misc ei
-fetch	;nop
 insn_rn_rm or
 insn_rn_imm8 or
 insn_misc rc
@@ -2239,6 +2380,7 @@ _rt:
 _syscall:
 	mov	r8,	psw
 	st	r8,	_PSW
+	__EnterNMIBlkSection
 	l	er8,	VCSR
 	st	er8,	VLCSR
 	mov	er8,	sp
@@ -2255,14 +2397,24 @@ _syscall:
 	l	er8,	VER8
 	l	er10,	VER10
 	pop	psw
+	di
 	bl	__stack_call
 	st	er8,	VER8
 	st	er10,	VER10
 	mov	r10,	psw
+	__LeaveNMIBlkSection
 	mov	r8,	#byte1 VLR
 	mov	r9,	#byte2 VLR
+	tb	_PSW.3
+	bne	_syscall_retn_ei
 	mov	psw,	r10
 	swi	#1
+	fetch
+
+_syscall_retn_ei:
+	mov	psw,	r10
+	swi	#1
+	ei
 	fetch
 
 ;VDSR/VSSR <- ERn
