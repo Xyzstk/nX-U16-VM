@@ -73,7 +73,7 @@ __stack_call:
 
 ;BP/FP addressing instructions are implemented here in case handler segment grows too large
 vstack_load_store macro isload, regsize, regidx
-	local overflow, _underflow, underflow, _external, external, loop1, loop2
+	local overflow, _underflow, underflow, _external, external, loop1, loop2, loop3
 	if isload
 		mov	r10,	psw
 	endif
@@ -161,7 +161,6 @@ loop1:
 
 _underflow:
 	l	er10,	SS_END
-underflow:
 	st	er2,	TMP + 2
 	l	er0,	SS_START
 	l	er2,	VSREGS + regidx
@@ -170,8 +169,20 @@ underflow:
 loop2:
 	add	er2,	#1
 	add	er8,	er0
+	bcy	loop2
+	bal	loop3
+
+underflow:
+	st	er2,	TMP + 2
+	l	er0,	SS_START
+	l	er2,	VSREGS + regidx
+	sub	r0,	r10
+	subc	r1,	r11
+loop3:
+	add	er2,	#1
+	add	er8,	er0
 	cmp	er8,	er10
-	bge	loop2
+	bge	loop3
 	l	er0,	VSSR
 	cmp	er2,	er0
 	bne	external
@@ -319,7 +330,6 @@ vsp_add_loop1:
 
 _vsp_add_underflow:
 	l	er10,	SS_END
-vsp_add_underflow:
 	l	er0,	SS_START
 	l	er2,	VSP + 2
 	sub	r0,	r10
@@ -327,8 +337,19 @@ vsp_add_underflow:
 vsp_add_loop2:
 	add	er2,	#1
 	add	er8,	er0
+	bcy	vsp_add_loop2
+	bal	vsp_add_loop3
+
+vsp_add_underflow:
+	l	er0,	SS_START
+	l	er2,	VSP + 2
+	sub	r0,	r10
+	subc	r1,	r11
+vsp_add_loop3:
+	add	er2,	#1
+	add	er8,	er0
 	cmp	er8,	er10
-	bge	vsp_add_loop2
+	bge	vsp_add_loop3
 	st	er8,	VSP
 	st	er2,	VSP + 2
 	l	er0,	TMP
@@ -336,6 +357,250 @@ vsp_add_loop2:
 	l	r10,	_PSW
 	mov	psw,	r10
 	rt
+
+;PADD/PSUB instruction handler
+_padd_psub_helper macro symbol0, symbol1, symbol2, isadd, ern, regidx
+	if regidx < 8 || regidx >= 12
+		st	r8,	_PSW
+	endif
+	di
+	sb	VM_RUNNING.1
+	if regidx == 0
+		st	er2,	TMP
+		if isadd
+			l	er2,	symbol0
+		else
+			l	er2,	symbol1
+		endif
+		sub	r2,	r10
+		subc	r3,	r11
+	else
+		st	er0,	TMP
+		if isadd
+			l	er0,	symbol0
+		else
+			l	er0,	symbol1
+		endif
+		sub	r0,	r10
+		subc	r1,	r11
+	endif
+	if regidx >= 8 && regidx < 12
+		st	er2,	TMP + 2
+		l	er2,	VSREGS + regidx
+	else
+		l	er8,	VSREGS + regidx
+	endif
+symbol2:
+	if regidx >= 8 && regidx < 12
+		if isadd
+			add	er2,	#1
+		else
+			add	er2,	#-1
+		endif
+	else
+		if isadd
+			add	er8,	#1
+		else
+			add	er8,	#-1
+		endif
+	endif
+	if regidx == 0
+		add	ern,	er2
+	else
+		add	ern,	er0
+	endif
+endm
+
+pointer_arithmetic_fix macro isadd, ern, regidx
+	local ss_fix
+	local _do_ds_fix, do_ds_fix, ds_fix_loop1, ds_fix_loop2, ds_fix_nv, ds_retn
+	local _do_ss_fix, do_ss_fix, ss_fix_loop1, ss_fix_loop2, ss_fix_nv, ss_retn
+	mov	r8,	psw
+	and	r8,	#01001111b
+	if regidx >= 8 && regidx < 12
+		st	r8,	_PSW
+		l	er8,	VXR8 + regidx - 8
+	endif
+	tb	(VSREGS + regidx + 1).7
+	bne	ss_fix
+	if isadd
+		l	er10,	DS_END
+		bcy	_do_ds_fix
+	else
+		l	er10,	DS_START
+		bnc	_do_ds_fix
+	endif
+	cmp	ern,	er10
+	if isadd
+		bge	do_ds_fix
+	else
+		blt	do_ds_fix
+	endif
+	if regidx >= 8 && regidx < 12
+		l	r8,	_PSW
+	endif
+	mov	psw,	r8
+	rt
+
+ss_fix:
+	if isadd
+		l	er10,	SS_END
+		bcy	_do_ss_fix
+	else
+		l	er10,	SS_START
+		bnc	_do_ss_fix
+	endif
+	cmp	ern,	er10
+	if isadd
+		bge	do_ss_fix
+	else
+		blt	do_ss_fix
+	endif
+	if regidx >= 8 && regidx < 12
+		l	r8,	_PSW
+	endif
+	sb	r8.5
+	mov	psw,	r8
+	rt
+
+_do_ds_fix:
+	_padd_psub_helper DS_START, DS_END, ds_fix_loop1, isadd, ern, regidx
+	if isadd
+		bcy	ds_fix_loop1
+	else
+		bnc	ds_fix_loop1
+	endif
+	bal	ds_fix_loop2
+
+do_ds_fix:
+	_padd_psub_helper DS_START, DS_END, ds_fix_loop2, isadd, ern, regidx
+	cmp	ern,	er10
+	if isadd
+		bge	ds_fix_loop2
+	else
+		blt	ds_fix_loop2
+	endif
+	l	r10,	_PSW
+	sb	r10.7
+	if regidx >= 8 && regidx < 12
+		rb	r3.7
+		st	er2,	VSREGS + regidx
+		st	er8,	VXR8 + regidx - 8
+	else
+		rb	r9.7
+		st	er8,	VSREGS + regidx
+	endif
+	beq	ds_fix_nv
+	sb	r10.4
+ds_fix_nv:
+	if regidx == 0
+		l	er2,	TMP
+	else
+		l	er0,	TMP
+	endif
+	if regidx >= 8 && regidx < 12
+		l	er2,	TMP + 2
+	endif
+	rb	VM_RUNNING.1
+	bne	ds_retn
+	sb	QWDT
+ds_retn:
+	mov	psw,	r10
+	rt
+
+_do_ss_fix:
+	_padd_psub_helper SS_START, SS_END, ss_fix_loop1, isadd, ern, regidx
+	if isadd
+		bcy	ss_fix_loop1
+	else
+		bnc	ss_fix_loop1
+	endif
+	bal	ss_fix_loop2
+
+do_ss_fix:
+	_padd_psub_helper SS_START, SS_END, ss_fix_loop2, isadd, ern, regidx
+	cmp	ern,	er10
+	if isadd
+		bge	ss_fix_loop2
+	else
+		blt	ss_fix_loop2
+	endif
+	l	r10,	_PSW
+	or	r10,	#10100000b
+	if regidx >= 8 && regidx < 12
+		sb	r3.7
+		st	er2,	VSREGS + regidx
+		st	er8,	VXR8 + regidx - 8
+	else
+		sb	r9.7
+		st	er8,	VSREGS + regidx
+	endif
+	bne	ss_fix_nv
+	sb	r10.4
+ss_fix_nv:
+	if regidx == 0
+		l	er2,	TMP
+	else
+		l	er0,	TMP
+	endif
+	if regidx >= 8 && regidx < 12
+		l	er2,	TMP + 2
+	endif
+	rb	VM_RUNNING.1
+	bne	ss_retn
+	sb	QWDT
+ss_retn:
+	mov	psw,	r10
+	rt
+endm
+
+__longptr_fix_padd_ser0:
+	pointer_arithmetic_fix 1, er0, 0
+
+__longptr_fix_padd_ser2:
+	pointer_arithmetic_fix 1, er2, 2
+
+__longptr_fix_padd_ser4:
+	pointer_arithmetic_fix 1, er4, 4
+
+__longptr_fix_padd_ser6:
+	pointer_arithmetic_fix 1, er6, 6
+
+__longptr_fix_padd_ser8:
+	pointer_arithmetic_fix 1, er8, 8
+
+__longptr_fix_padd_ser10:
+	pointer_arithmetic_fix 1, er8, 10
+
+__longptr_fix_padd_ser12:
+	pointer_arithmetic_fix 1, er12, 12
+
+__longptr_fix_padd_ser14:
+	pointer_arithmetic_fix 1, er14, 14
+
+__longptr_fix_psub_ser0:
+	pointer_arithmetic_fix 0, er0, 0
+
+__longptr_fix_psub_ser2:
+	pointer_arithmetic_fix 0, er2, 2
+
+__longptr_fix_psub_ser4:
+	pointer_arithmetic_fix 0, er4, 4
+
+__longptr_fix_psub_ser6:
+	pointer_arithmetic_fix 0, er6, 6
+
+__longptr_fix_psub_ser8:
+	pointer_arithmetic_fix 0, er8, 8
+
+__longptr_fix_psub_ser10:
+	pointer_arithmetic_fix 0, er8, 10
+
+__longptr_fix_psub_ser12:
+	pointer_arithmetic_fix 0, er12, 12
+
+__longptr_fix_psub_ser14:
+	pointer_arithmetic_fix 0, er14, 14
 
 ;SWI 0 handler
 ;raise exceptions
@@ -748,6 +1013,12 @@ insn_misc macro insn
 	fetch
 endm
 
+;handler for complex instructions
+insn_fn_impl macro fn
+	bl	fn
+	fetch
+endm
+
 insn_ern_erm add
 insn_rn_rm add
 insn_rn_imm8 add
@@ -786,6 +1057,36 @@ insn_rn_rm subc
 insn_rn_rm xor
 insn_rn_imm8 xor
 
+;PADD/PSUB SERn
+;fix overflow in 32-bit pointer arithmetic
+;Usage:
+;ADD ERn, obj
+;PADD/PSUB SERn
+;Flags:
+;C: This bit goes to 1 if an overflow took place in the previous instruction and a fix is applied, and to 0 otherwise.
+;S: This bit goes to 1 if the target register represents a stack segment address and to 0 otherwise.
+;OV: This bit goes to 1 if the operation produces an overflow in segment register and to 0 otherwise.
+
+;PADD SERn
+insn_fn_impl __longptr_fix_padd_ser0
+insn_fn_impl __longptr_fix_padd_ser2
+insn_fn_impl __longptr_fix_padd_ser4
+insn_fn_impl __longptr_fix_padd_ser6
+insn_fn_impl __longptr_fix_padd_ser8
+insn_fn_impl __longptr_fix_padd_ser10
+insn_fn_impl __longptr_fix_padd_ser12
+insn_fn_impl __longptr_fix_padd_ser14
+
+;PSUB SERn
+insn_fn_impl __longptr_fix_psub_ser0
+insn_fn_impl __longptr_fix_psub_ser2
+insn_fn_impl __longptr_fix_psub_ser4
+insn_fn_impl __longptr_fix_psub_ser6
+insn_fn_impl __longptr_fix_psub_ser8
+insn_fn_impl __longptr_fix_psub_ser10
+insn_fn_impl __longptr_fix_psub_ser12
+insn_fn_impl __longptr_fix_psub_ser14
+
 ;ADD ERn, #imm16
 idx0 set 0
 irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
@@ -801,10 +1102,19 @@ irp ern, <er0, er2, er4, er6, er8, er10, er12, er14>
 	idx0 set idx0 + 2
 endm
 
-;ADD SP, #imm16
-_add_sp_imm:
-	bl	__vstack_vsp_addition
+;ADD SERn, #imm16
+idx0 set 0
+rept 8
+	l	er8,	VSREGS + idx0
+	pop	er10
+	add	er8,	er10
+	st	er8,	VSREGS + idx0
 	fetch
+	idx0 set idx0 + 2
+endm
+
+;ADD SP, #imm16
+insn_fn_impl __vstack_vsp_addition
 
 ;DEC [EA]
 _dec_ea:
