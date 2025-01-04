@@ -834,8 +834,8 @@ insn_rn_rm macro insn
 					l	r8,	VXR8 + idx0 - 8
 					insn	r8,	r8
 					st	r8,	VXR8 + idx0 - 8
-				elseif (idx0 & 0Fh) == (idx1 & 0Fh)
-					l	er8,	VXR8 + (idx0 & 0Fh) - 8
+				elseif (idx0 & 0Eh) == (idx1 & 0Eh)
+					l	er8,	VXR8 + (idx0 & 0Eh) - 8
 					if idx0 < idx1
 						insn	r8,	r9
 						st	r8,	VXR8 + idx0 - 8
@@ -880,8 +880,8 @@ insn_rn_rm_saveflags macro insn
 					mov	psw,	r10
 					insn	r8,	r8
 					st	r8,	VXR8 + idx0 - 8
-				elseif (idx0 & 0Fh) == (idx1 & 0Fh)
-					l	er8,	VXR8 + (idx0 & 0Fh) - 8
+				elseif (idx0 & 0Eh) == (idx1 & 0Eh)
+					l	er8,	VXR8 + (idx0 & 0Eh) - 8
 					mov	psw,	r10
 					if idx0 < idx1
 						insn	r8,	r9
