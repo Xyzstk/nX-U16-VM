@@ -178,9 +178,11 @@ vstack_load_store macro isload, regsize, regidx
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
-		l	r8,	[er8]
-	else
-		l	er8,	[er8]
+		if regsize == 1
+			l	r8,	[er8]
+		else
+			l	er8,	[er8]
+		endif
 	endif
 	rt
 
@@ -217,9 +219,11 @@ loop1:
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
-		l	r8,	[er8]
-	else
-		l	er8,	[er8]
+		if regsize == 1
+			l	r8,	[er8]
+		else
+			l	er8,	[er8]
+		endif
 	endif
 	rt
 
@@ -265,9 +269,11 @@ loop3:
 	l	r10,	_PSW
 	mov	psw,	r10
 	if isload
-		l	r8,	[er8]
-	else
-		l	er8,	[er8]
+		if regsize == 1
+			l	r8,	[er8]
+		else
+			l	er8,	[er8]
+		endif
 	endif
 	rt
 
@@ -692,13 +698,13 @@ handle_nmi:
 	l	er10,	VSSR
 	st	er8,	VECSR2
 	st	er10,	VESSR2
+	l	er8,	INT_VTABLE + 8
+	beq	nmi_default_handler_vm
 ;reserve 8 byte in vstack in case a stack operation is in progress
 	l	er8,	VSP
 	add	er8,	#-8
 	st	er8,	VSP
 
-	l	er8,	INT_VTABLE + 8
-	beq	nmi_default_handler_vm
 	mov	r8,	#byte1 (INT_VTABLE + 8)
 	mov	r9,	#byte2 (INT_VTABLE + 8)
 	swi	#1
