@@ -60,9 +60,9 @@ VESSR1	EQU 09032h
 VESSR2	EQU 09042h
 VESSR3	EQU 09052h
 
-VEPSWBAC1	EQU	09034h
-VEPSWBAC2	EQU	09044h
-VEPSWBAC3	EQU	09054h
+VEPSWBAK1	EQU	09034h
+VEPSWBAK2	EQU	09044h
+VEPSWBAK3	EQU	09054h
 
 VEVMFLAGS1	EQU	09035h
 VEVMFLAGS2	EQU	09045h
@@ -1146,7 +1146,7 @@ handle_nmi:
 	mov	er8,	sp
 	l	er10,	_PSW
 	st	er8,	VESP2
-	st	er10,	VEPSWBAC2
+	st	er10,	VEPSWBAK2
 	l	er8,	VCSR
 	l	er10,	VSSR
 	st	er8,	VECSR2
@@ -2027,6 +2027,33 @@ irp erm, <er0, er2, er4, er6, er8, er10, er12, er14>
 	endm
 	idx1 set idx1 + 2
 endm
+
+;MOV Rn, PSW
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
+	mov	rn,	psw
+	if idx0 >= 8 && idx0 < 12
+		st	rn,	VXR8 + idx0 - 8
+	endif
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;MOV PSW, Rm
+idx0 set 0
+irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r8, r8, r8, r8, r12, r13, r14, r15>
+	if idx0 >= 8 && idx0 < 12
+		l	rn,	VXR8 + idx0 - 8
+	endif
+	mov	psw,	rn
+	fetch
+	idx0 set idx0 + 1
+endm
+
+;MOV PSW, #imm8
+_mov_psw_imm8:
+	pop	psw
+	fetch
 
 ;NEG Rn
 idx0 set 0
@@ -3092,6 +3119,22 @@ _push_qr8:
 	mov	psw,	r10
 	fetch
 
+;PUSH SERn
+idx0 set 0
+rept 8
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
+	add	er8,	#-2
+	st	er8,	VSP
+	l	er10,	VSREGS + idx0
+	st	er10,	[er8]
+	l	r10,	_PSW
+	mov	psw,	r10
+	fetch
+	idx0 set idx0 + 2
+endm
+
 ;POP Rn
 idx0 set 0
 irp rn, <r0, r1, r2, r3, r4, r5, r6, r7, r10, r10, r10, r10, r12, r13, r14, r15>
@@ -3177,6 +3220,21 @@ _pop_qr8:
 	mov	sp,	er10
 	st	er8,	VSP
 	fetch
+
+;POP SERn
+idx0 set 0
+rept 8
+	swi	#3
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	er8
+	st	er8,	VSREGS + idx0
+	mov	er8,	sp
+	mov	sp,	er10
+	st	er8,	VSP
+	fetch
+	idx0 set idx0 + 2
+endm
 
 ;SWI #snum
 idx0 set 4
