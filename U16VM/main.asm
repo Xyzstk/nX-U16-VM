@@ -239,575 +239,364 @@ __vstack_word_store_external:
 	mov	psw,	r10
 	b	_nop
 
-vstack_load_rn macro rn, rn_idx, erm, erm_idx
-	local overflow, underflow, _external, external
-	mov	r10,	psw
-	st	r10,	_PSW
-	__EnterIntBlkSection
-	st	er0,	TMP
-	pop	er8
-	add	er8,	erm
-	l	er10,	SS_START
-	cmp	er8,	er10
-	blt	overflow
-	l	er10,	SS_END
-	cmp	er8,	er10
-	bge	underflow
-	l	er0,	VSSR
-	l	er10,	VSREGS + erm_idx
-	cmp	er0,	er10
-	bne	_external
-	l	er0,	TMP
-	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	l	rn,	[er8]
-	if rn_idx >= 8 && rn_idx < 12
-		st	rn,	VXR8 + rn_idx - 8
-	endif
-	b	_nop
-
-overflow:
-	st	er2,	TMP + 2
-	l	er2,	VSREGS + erm_idx
-	bl	__vstack_load_store$overflow
-	bne	external
-	l	er0,	TMP
-	l	er2,	TMP + 2
-	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	l	rn,	[er8]
-	if rn_idx >= 8 && rn_idx < 12
-		st	rn,	VXR8 + rn_idx - 8
-	endif
-	b	_nop
-
-underflow:
-	st	er2,	TMP + 2
-	l	er2,	VSREGS + erm_idx
-	bl	__vstack_load_store$underflow
-	bne	external
-	l	er0,	TMP
-	l	er2,	TMP + 2
-	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	l	rn,	[er8]
-	if rn_idx >= 8 && rn_idx < 12
-		st	rn,	VXR8 + rn_idx - 8
-	endif
-	b	_nop
-
-_external:
-	st	er2,	TMP + 2
-	mov	er2,	er10
-external:
-	bl	__vstack_byte_load_external
-	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	mov	rn,	r8
-	if rn_idx >= 8 && rn_idx < 12
-		st	r8,	VXR8 + rn_idx - 8
+vstack_do_load_store macro isload, regn, regn_idx
+	if isload
+		l	r10,	_PSW
+		mov	psw,	r10
+		l	regn,	[er8]
+		if regn_idx >= 8 && regn_idx < 12
+			st	regn,	VXR8 + regn_idx - 8
+		endif
+	else
+		if regn_idx >= 8 && regn_idx < 12
+			l	regn,	VXR8 + regn_idx - 8
+			st	regn,	[er8]
+		else
+			st	regn,	[er8]
+		endif
+		l	r10,	_PSW
+		mov	psw,	r10
 	endif
 	b	_nop
 endm
 
-vstack_load_ern macro ern, ern_idx, erm, erm_idx
+vstack_load_store macro isload, regsize, regn, regn_idx, regm, regm_idx
 	local overflow, underflow, _external, external
 	mov	r10,	psw
 	st	r10,	_PSW
-	if ern_idx >= 8 && ern_idx < 12
+	if !((regn_idx < 8 || regn_idx >= 12) && isload && regsize == 2)
 		__EnterIntBlkSection
 		st	er0,	TMP
 	endif
 	pop	er8
-	add	er8,	erm
+	add	er8,	regm
 	l	er10,	SS_START
 	cmp	er8,	er10
 	blt	overflow
 	l	er10,	SS_END
 	cmp	er8,	er10
 	bge	underflow
-	if ern_idx >= 8 && ern_idx < 12
+	if !((regn_idx < 8 || regn_idx >= 12) && isload && regsize == 2)
 		l	er0,	VSSR
-		l	er10,	VSREGS + erm_idx
+		l	er10,	VSREGS + regm_idx
 		cmp	er0,	er10
 	else
-		l	ern,	VSSR
-		l	er10,	VSREGS + erm_idx
-		cmp	ern,	er10
+		l	regn,	VSSR
+		l	er10,	VSREGS + regm_idx
+		cmp	regn,	er10
 	endif
 	bne	_external
-	if ern_idx >= 8 && ern_idx < 12
+	if !((regn_idx < 8 || regn_idx >= 12) && isload && regsize == 2)
 		l	er0,	TMP
 		__LeaveNMIBlkSection
 	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	l	ern,	[er8]
-	if ern_idx >= 8 && ern_idx < 12
-		st	ern,	VXR8 + ern_idx - 8
-	endif
-	b	_nop
+	vstack_do_load_store isload, regn, regn_idx
 
 overflow:
-	if ern_idx < 8 || ern_idx >= 12
+	if (regn_idx < 8 || regn_idx >= 12) && isload && regsize == 2
 		__EnterIntBlkSection
-		if ern_idx != 0
+		if regn_idx != 0
 			st	er0,	TMP
 		endif
 	endif
-	if ern_idx != 2
+	if !(regn_idx == 2 && isload && regsize == 2)
 		st	er2,	TMP + 2
 	endif
-	l	er2,	VSREGS + erm_idx
+	l	er2,	VSREGS + regm_idx
 	bl	__vstack_load_store$overflow
 	bne	external
-	if ern_idx != 0
+	if !(regn_idx == 0 && isload && regsize == 2)
 		l	er0,	TMP
 	endif
-	if ern_idx != 2
+	if !(regn_idx == 2 && isload && regsize == 2)
 		l	er2,	TMP + 2
 	endif
 	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	l	ern,	[er8]
-	if ern_idx >= 8 && ern_idx < 12
-		st	ern,	VXR8 + ern_idx - 8
-	endif
-	b	_nop
+	vstack_do_load_store isload, regn, regn_idx
 
 underflow:
-	if ern_idx < 8 || ern_idx >= 12
+	if (regn_idx < 8 || regn_idx >= 12) && isload && regsize == 2
 		__EnterIntBlkSection
-		if ern_idx != 0
+		if regn_idx != 0
 			st	er0,	TMP
 		endif
 	endif
-	if ern_idx != 2
+	if !(regn_idx == 2 && isload && regsize == 2)
 		st	er2,	TMP + 2
 	endif
-	l	er2,	VSREGS + erm_idx
+	l	er2,	VSREGS + regm_idx
 	bl	__vstack_load_store$underflow
 	bne	external
-	if ern_idx != 0
+	if !(regn_idx == 0 && isload && regsize == 2)
 		l	er0,	TMP
 	endif
-	if ern_idx != 2
+	if !(regn_idx == 2 && isload && regsize == 2)
 		l	er2,	TMP + 2
 	endif
 	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	l	ern,	[er8]
-	if ern_idx >= 8 && ern_idx < 12
-		st	ern,	VXR8 + ern_idx - 8
-	endif
-	b	_nop
+	vstack_do_load_store isload, regn, regn_idx
 
 _external:
-	if ern_idx < 8 || ern_idx >= 12
+	if (regn_idx < 8 || regn_idx >= 12) && isload && regsize == 2
 		__EnterIntBlkSection
-		if ern_idx != 0
+		if regn_idx != 0
 			st	er0,	TMP
 		endif
 	endif
-	if ern_idx != 2
+	if !(regn_idx == 2 && isload && regsize == 2)
 		st	er2,	TMP + 2
 	endif
 	mov	er2,	er10
 external:
-	bl	__vstack_word_load_external
-	if ern_idx != 0
-		l	er0,	TMP
-	endif
-	if ern_idx != 2
-		l	er2,	TMP + 2
-	endif
-	__LeaveNMIBlkSection
-	l	r10,	_PSW
-	mov	psw,	r10
-	mov	ern,	er8
-	if ern_idx >= 8 && ern_idx < 12
-		st	er8,	VXR8 + ern_idx - 8
-	endif
-	b	_nop
-endm
-
-vstack_store_rn macro rn, rn_idx, erm, erm_idx
-	local overflow, underflow, _external, external
-	mov	r10,	psw
-	st	r10,	_PSW
-	__EnterIntBlkSection
-	st	er0,	TMP
-	pop	er8
-	add	er8,	erm
-	l	er10,	SS_START
-	cmp	er8,	er10
-	blt	overflow
-	l	er10,	SS_END
-	cmp	er8,	er10
-	bge	underflow
-	l	er0,	VSSR
-	l	er10,	VSREGS + 12
-	cmp	er0,	er10
-	bne	_external
-	l	er0,	TMP
-	__LeaveNMIBlkSection
-	if rn_idx >= 8 && rn_idx < 12
-		l	r10,	VXR8 + rn_idx - 8
-		st	r10,	[er8]
+	if isload
+		if regsize == 1
+			bl	__vstack_byte_load_external
+		else
+			bl	__vstack_word_load_external
+			if regn_idx != 0
+				l	er0,	TMP
+			endif
+			if regn_idx != 2
+				l	er2,	TMP + 2
+			endif
+		endif
+		__LeaveNMIBlkSection
+		l	r10,	_PSW
+		mov	psw,	r10
+		if regsize == 1
+			mov	regn,	r8
+		else
+			mov	regn,	er8
+		endif
+		if regn_idx >= 8 && regn_idx < 12
+			st	regn,	VXR8 + regn_idx - 8
+		endif
+		b	_nop
 	else
-		st	rn,	[er8]
+		if regn_idx >= 8 && regn_idx < 12
+			l	regn,	VXR8 + regn_idx - 8
+			st	regn,	TMP + 4
+		elseif regn_idx >= 0 && regn_idx < 4
+			l	regn,	TMP + regn_idx
+			st	regn,	TMP + 4
+		else
+			st	regn,	TMP + 4
+		endif
+		if regsize == 1
+			b	__vstack_byte_store_external
+		else
+			b	__vstack_word_store_external
+		endif
 	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	b	_nop
-
-overflow:
-	st	er2,	TMP + 2
-	l	er2,	VSREGS + erm_idx
-	bl	__vstack_load_store$overflow
-	bne	external
-	l	er0,	TMP
-	l	er2,	TMP + 2
-	__LeaveNMIBlkSection
-	if rn_idx >= 8 && rn_idx < 12
-		l	r10,	VXR8 + rn_idx - 8
-		st	r10,	[er8]
-	else
-		st	rn,	[er8]
-	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	b	_nop
-
-underflow:
-	st	er2,	TMP + 2
-	l	er2,	VSREGS + erm_idx
-	bl	__vstack_load_store$underflow
-	bne	external
-	l	er0,	TMP
-	l	er2,	TMP + 2
-	__LeaveNMIBlkSection
-	if rn_idx >= 8 && rn_idx < 12
-		l	r10,	VXR8 + rn_idx - 8
-		st	r10,	[er8]
-	else
-		st	rn,	[er8]
-	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	b	_nop
-
-_external:
-	st	er2,	TMP + 2
-	mov	er2,	er10
-external:
-	if rn_idx >= 8 && rn_idx < 12
-		l	r10,	VXR8 + rn_idx - 8
-		st	r10,	TMP + 4
-	elseif rn_idx >= 0 && rn_idx < 4
-		l	r10,	TMP + rn_idx
-		st	r10,	TMP + 4
-	else
-		st	rn,	TMP + 4
-	endif
-	b	__vstack_byte_store_external
-endm
-
-vstack_store_ern macro ern, ern_idx, erm, erm_idx
-	local overflow, underflow, _external, external
-	mov	r10,	psw
-	st	r10,	_PSW
-	__EnterIntBlkSection
-	st	er0,	TMP
-	pop	er8
-	add	er8,	erm
-	l	er10,	SS_START
-	cmp	er8,	er10
-	blt	overflow
-	l	er10,	SS_END
-	cmp	er8,	er10
-	bge	underflow
-	l	er0,	VSSR
-	l	er10,	VSREGS + 12
-	cmp	er0,	er10
-	bne	_external
-	l	er0,	TMP
-	__LeaveNMIBlkSection
-	if ern_idx >= 8 && ern_idx < 12
-		l	er10,	VXR8 + ern_idx - 8
-		st	er10,	[er8]
-	else
-		st	ern,	[er8]
-	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	b	_nop
-
-overflow:
-	st	er2,	TMP + 2
-	l	er2,	VSREGS + erm_idx
-	bl	__vstack_load_store$overflow
-	bne	external
-	l	er0,	TMP
-	l	er2,	TMP + 2
-	__LeaveNMIBlkSection
-	if ern_idx >= 8 && ern_idx < 12
-		l	er10,	VXR8 + ern_idx - 8
-		st	er10,	[er8]
-	else
-		st	ern,	[er8]
-	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	b	_nop
-
-underflow:
-	st	er2,	TMP + 2
-	l	er2,	VSREGS + erm_idx
-	bl	__vstack_load_store$underflow
-	bne	external
-	l	er0,	TMP
-	l	er2,	TMP + 2
-	__LeaveNMIBlkSection
-	if ern_idx >= 8 && ern_idx < 12
-		l	er10,	VXR8 + ern_idx - 8
-		st	er10,	[er8]
-	else
-		st	ern,	[er8]
-	endif
-	l	r10,	_PSW
-	mov	psw,	r10
-	b	_nop
-
-_external:
-	st	er2,	TMP + 2
-	mov	er2,	er10
-external:
-	if ern_idx >= 8 && ern_idx < 12
-		l	er10,	VXR8 + ern_idx - 8
-		st	er10,	TMP + 4
-	elseif ern_idx >= 0 && ern_idx < 4
-		l	er10,	TMP + ern_idx
-		st	er10,	TMP + 4
-	else
-		st	ern,	TMP + 4
-	endif
-	b	__vstack_word_store_external
 endm
 
 ;helper function for `L Rn, Disp16[BP]` instructions
 __vstack_load_r0_bp:
-	vstack_load_rn r0, 0, bp, 12
+	vstack_load_store 1, 1, r0, 0, bp, 12
 __vstack_load_r1_bp:
-	vstack_load_rn r1, 1, bp, 12
+	vstack_load_store 1, 1, r1, 1, bp, 12
 __vstack_load_r2_bp:
-	vstack_load_rn r2, 2, bp, 12
+	vstack_load_store 1, 1, r2, 2, bp, 12
 __vstack_load_r3_bp:
-	vstack_load_rn r3, 3, bp, 12
+	vstack_load_store 1, 1, r3, 3, bp, 12
 __vstack_load_r4_bp:
-	vstack_load_rn r4, 4, bp, 12
+	vstack_load_store 1, 1, r4, 4, bp, 12
 __vstack_load_r5_bp:
-	vstack_load_rn r5, 5, bp, 12
+	vstack_load_store 1, 1, r5, 5, bp, 12
 __vstack_load_r6_bp:
-	vstack_load_rn r6, 6, bp, 12
+	vstack_load_store 1, 1, r6, 6, bp, 12
 __vstack_load_r7_bp:
-	vstack_load_rn r7, 7, bp, 12
+	vstack_load_store 1, 1, r7, 7, bp, 12
 __vstack_load_r8_bp:
-	vstack_load_rn r8, 8, bp, 12
+	vstack_load_store 1, 1, r8, 8, bp, 12
 __vstack_load_r9_bp:
-	vstack_load_rn r8, 9, bp, 12
+	vstack_load_store 1, 1, r8, 9, bp, 12
 __vstack_load_r10_bp:
-	vstack_load_rn r8, 10, bp, 12
+	vstack_load_store 1, 1, r8, 10, bp, 12
 __vstack_load_r11_bp:
-	vstack_load_rn r8, 11, bp, 12
+	vstack_load_store 1, 1, r8, 11, bp, 12
 __vstack_load_r12_bp:
-	vstack_load_rn r12, 12, bp, 12
+	vstack_load_store 1, 1, r12, 12, bp, 12
 __vstack_load_r13_bp:
-	vstack_load_rn r13, 13, bp, 12
+	vstack_load_store 1, 1, r13, 13, bp, 12
 __vstack_load_r14_bp:
-	vstack_load_rn r14, 14, bp, 12
+	vstack_load_store 1, 1, r14, 14, bp, 12
 __vstack_load_r15_bp:
-	vstack_load_rn r15, 15, bp, 12
+	vstack_load_store 1, 1, r15, 15, bp, 12
 
 ;helper function for `L Rn, Disp16[FP]` instructions
 __vstack_load_r0_fp:
-	vstack_load_rn r0, 0, fp, 14
+	vstack_load_store 1, 1, r0, 0, fp, 14
 __vstack_load_r1_fp:
-	vstack_load_rn r1, 1, fp, 14
+	vstack_load_store 1, 1, r1, 1, fp, 14
 __vstack_load_r2_fp:
-	vstack_load_rn r2, 2, fp, 14
+	vstack_load_store 1, 1, r2, 2, fp, 14
 __vstack_load_r3_fp:
-	vstack_load_rn r3, 3, fp, 14
+	vstack_load_store 1, 1, r3, 3, fp, 14
 __vstack_load_r4_fp:
-	vstack_load_rn r4, 4, fp, 14
+	vstack_load_store 1, 1, r4, 4, fp, 14
 __vstack_load_r5_fp:
-	vstack_load_rn r5, 5, fp, 14
+	vstack_load_store 1, 1, r5, 5, fp, 14
 __vstack_load_r6_fp:
-	vstack_load_rn r6, 6, fp, 14
+	vstack_load_store 1, 1, r6, 6, fp, 14
 __vstack_load_r7_fp:
-	vstack_load_rn r7, 7, fp, 14
+	vstack_load_store 1, 1, r7, 7, fp, 14
 __vstack_load_r8_fp:
-	vstack_load_rn r8, 8, fp, 14
+	vstack_load_store 1, 1, r8, 8, fp, 14
 __vstack_load_r9_fp:
-	vstack_load_rn r8, 9, fp, 14
+	vstack_load_store 1, 1, r8, 9, fp, 14
 __vstack_load_r10_fp:
-	vstack_load_rn r8, 10, fp, 14
+	vstack_load_store 1, 1, r8, 10, fp, 14
 __vstack_load_r11_fp:
-	vstack_load_rn r8, 11, fp, 14
+	vstack_load_store 1, 1, r8, 11, fp, 14
 __vstack_load_r12_fp:
-	vstack_load_rn r12, 12, fp, 14
+	vstack_load_store 1, 1, r12, 12, fp, 14
 __vstack_load_r13_fp:
-	vstack_load_rn r13, 13, fp, 14
+	vstack_load_store 1, 1, r13, 13, fp, 14
 __vstack_load_r14_fp:
-	vstack_load_rn r14, 14, fp, 14
+	vstack_load_store 1, 1, r14, 14, fp, 14
 __vstack_load_r15_fp:
-	vstack_load_rn r15, 15, fp, 14
+	vstack_load_store 1, 1, r15, 15, fp, 14
 
 ;helper function for `L ERn, Disp16[BP]` instructions
 __vstack_load_er0_bp:
-	vstack_load_ern er0, 0, bp, 12
+	vstack_load_store 1, 2, er0, 0, bp, 12
 __vstack_load_er2_bp:
-	vstack_load_ern er2, 2, bp, 12
+	vstack_load_store 1, 2, er2, 2, bp, 12
 __vstack_load_er4_bp:
-	vstack_load_ern er4, 4, bp, 12
+	vstack_load_store 1, 2, er4, 4, bp, 12
 __vstack_load_er6_bp:
-	vstack_load_ern er6, 6, bp, 12
+	vstack_load_store 1, 2, er6, 6, bp, 12
 __vstack_load_er8_bp:
-	vstack_load_ern er8, 8, bp, 12
+	vstack_load_store 1, 2, er8, 8, bp, 12
 __vstack_load_er10_bp:
-	vstack_load_ern er8, 10, bp, 12
+	vstack_load_store 1, 2, er8, 10, bp, 12
 __vstack_load_er12_bp:
-	vstack_load_ern er12, 12, bp, 12
+	vstack_load_store 1, 2, er12, 12, bp, 12
 __vstack_load_er14_bp:
-	vstack_load_ern er14, 14, bp, 12
+	vstack_load_store 1, 2, er14, 14, bp, 12
 
 ;helper function for `L ERn, Disp16[FP]` instructions
 __vstack_load_er0_fp:
-	vstack_load_ern er0, 0, fp, 14
+	vstack_load_store 1, 2, er0, 0, fp, 14
 __vstack_load_er2_fp:
-	vstack_load_ern er2, 2, fp, 14
+	vstack_load_store 1, 2, er2, 2, fp, 14
 __vstack_load_er4_fp:
-	vstack_load_ern er4, 4, fp, 14
+	vstack_load_store 1, 2, er4, 4, fp, 14
 __vstack_load_er6_fp:
-	vstack_load_ern er6, 6, fp, 14
+	vstack_load_store 1, 2, er6, 6, fp, 14
 __vstack_load_er8_fp:
-	vstack_load_ern er8, 8, fp, 14
+	vstack_load_store 1, 2, er8, 8, fp, 14
 __vstack_load_er10_fp:
-	vstack_load_ern er8, 10, fp, 14
+	vstack_load_store 1, 2, er8, 10, fp, 14
 __vstack_load_er12_fp:
-	vstack_load_ern er12, 12, fp, 14
+	vstack_load_store 1, 2, er12, 12, fp, 14
 __vstack_load_er14_fp:
-	vstack_load_ern er14, 14, fp, 14
+	vstack_load_store 1, 2, er14, 14, fp, 14
 
 ;helper function for `ST Rn, Disp16[BP]` instructions
 __vstack_store_r0_bp:
-	vstack_store_rn r0, 0, bp, 12
+	vstack_load_store 0, 1, r0, 0, bp, 12
 __vstack_store_r1_bp:
-	vstack_store_rn r1, 1, bp, 12
+	vstack_load_store 0, 1, r1, 1, bp, 12
 __vstack_store_r2_bp:
-	vstack_store_rn r2, 2, bp, 12
+	vstack_load_store 0, 1, r2, 2, bp, 12
 __vstack_store_r3_bp:
-	vstack_store_rn r3, 3, bp, 12
+	vstack_load_store 0, 1, r3, 3, bp, 12
 __vstack_store_r4_bp:
-	vstack_store_rn r4, 4, bp, 12
+	vstack_load_store 0, 1, r4, 4, bp, 12
 __vstack_store_r5_bp:
-	vstack_store_rn r5, 5, bp, 12
+	vstack_load_store 0, 1, r5, 5, bp, 12
 __vstack_store_r6_bp:
-	vstack_store_rn r6, 6, bp, 12
+	vstack_load_store 0, 1, r6, 6, bp, 12
 __vstack_store_r7_bp:
-	vstack_store_rn r7, 7, bp, 12
+	vstack_load_store 0, 1, r7, 7, bp, 12
 __vstack_store_r8_bp:
-	vstack_store_rn r8, 8, bp, 12
+	vstack_load_store 0, 1, r10, 8, bp, 12
 __vstack_store_r9_bp:
-	vstack_store_rn r9, 9, bp, 12
+	vstack_load_store 0, 1, r10, 9, bp, 12
 __vstack_store_r10_bp:
-	vstack_store_rn r10, 10, bp, 12
+	vstack_load_store 0, 1, r10, 10, bp, 12
 __vstack_store_r11_bp:
-	vstack_store_rn r11, 11, bp, 12
+	vstack_load_store 0, 1, r10, 11, bp, 12
 __vstack_store_r12_bp:
-	vstack_store_rn r12, 12, bp, 12
+	vstack_load_store 0, 1, r12, 12, bp, 12
 __vstack_store_r13_bp:
-	vstack_store_rn r13, 13, bp, 12
+	vstack_load_store 0, 1, r13, 13, bp, 12
 __vstack_store_r14_bp:
-	vstack_store_rn r14, 14, bp, 12
+	vstack_load_store 0, 1, r14, 14, bp, 12
 __vstack_store_r15_bp:
-	vstack_store_rn r15, 15, bp, 12
+	vstack_load_store 0, 1, r15, 15, bp, 12
 
 ;helper function for `ST Rn, Disp16[FP]` instructions
 __vstack_store_r0_fp:
-	vstack_store_rn r0, 0, fp, 14
+	vstack_load_store 0, 1, r0, 0, fp, 14
 __vstack_store_r1_fp:
-	vstack_store_rn r1, 1, fp, 14
+	vstack_load_store 0, 1, r1, 1, fp, 14
 __vstack_store_r2_fp:
-	vstack_store_rn r2, 2, fp, 14
+	vstack_load_store 0, 1, r2, 2, fp, 14
 __vstack_store_r3_fp:
-	vstack_store_rn r3, 3, fp, 14
+	vstack_load_store 0, 1, r3, 3, fp, 14
 __vstack_store_r4_fp:
-	vstack_store_rn r4, 4, fp, 14
+	vstack_load_store 0, 1, r4, 4, fp, 14
 __vstack_store_r5_fp:
-	vstack_store_rn r5, 5, fp, 14
+	vstack_load_store 0, 1, r5, 5, fp, 14
 __vstack_store_r6_fp:
-	vstack_store_rn r6, 6, fp, 14
+	vstack_load_store 0, 1, r6, 6, fp, 14
 __vstack_store_r7_fp:
-	vstack_store_rn r7, 7, fp, 14
+	vstack_load_store 0, 1, r7, 7, fp, 14
 __vstack_store_r8_fp:
-	vstack_store_rn r8, 8, fp, 14
+	vstack_load_store 0, 1, r10, 8, fp, 14
 __vstack_store_r9_fp:
-	vstack_store_rn r9, 9, fp, 14
+	vstack_load_store 0, 1, r10, 9, fp, 14
 __vstack_store_r10_fp:
-	vstack_store_rn r10, 10, fp, 14
+	vstack_load_store 0, 1, r10, 10, fp, 14
 __vstack_store_r11_fp:
-	vstack_store_rn r11, 11, fp, 14
+	vstack_load_store 0, 1, r10, 11, fp, 14
 __vstack_store_r12_fp:
-	vstack_store_rn r12, 12, fp, 14
+	vstack_load_store 0, 1, r12, 12, fp, 14
 __vstack_store_r13_fp:
-	vstack_store_rn r13, 13, fp, 14
+	vstack_load_store 0, 1, r13, 13, fp, 14
 __vstack_store_r14_fp:
-	vstack_store_rn r14, 14, fp, 14
+	vstack_load_store 0, 1, r14, 14, fp, 14
 __vstack_store_r15_fp:
-	vstack_store_rn r15, 15, fp, 14
+	vstack_load_store 0, 1, r15, 15, fp, 14
 
 ;helper function for `ST ERn, Disp16[BP]` instructions
 __vstack_store_er0_bp:
-	vstack_store_ern er0, 0, bp, 12
+	vstack_load_store 0, 2, er0, 0, bp, 12
 __vstack_store_er2_bp:
-	vstack_store_ern er2, 2, bp, 12
+	vstack_load_store 0, 2, er2, 2, bp, 12
 __vstack_store_er4_bp:
-	vstack_store_ern er4, 4, bp, 12
+	vstack_load_store 0, 2, er4, 4, bp, 12
 __vstack_store_er6_bp:
-	vstack_store_ern er6, 6, bp, 12
+	vstack_load_store 0, 2, er6, 6, bp, 12
 __vstack_store_er8_bp:
-	vstack_store_ern er8, 8, bp, 12
+	vstack_load_store 0, 2, er10, 8, bp, 12
 __vstack_store_er10_bp:
-	vstack_store_ern er10, 10, bp, 12
+	vstack_load_store 0, 2, er10, 10, bp, 12
 __vstack_store_er12_bp:
-	vstack_store_ern er12, 12, bp, 12
+	vstack_load_store 0, 2, er12, 12, bp, 12
 __vstack_store_er14_bp:
-	vstack_store_ern er14, 14, bp, 12
+	vstack_load_store 0, 2, er14, 14, bp, 12
 
 ;helper function for `ST ERn, Disp16[FP]` instructions
 __vstack_store_er0_fp:
-	vstack_store_ern er0, 0, fp, 14
+	vstack_load_store 0, 2, er0, 0, fp, 14
 __vstack_store_er2_fp:
-	vstack_store_ern er2, 2, fp, 14
+	vstack_load_store 0, 2, er2, 2, fp, 14
 __vstack_store_er4_fp:
-	vstack_store_ern er4, 4, fp, 14
+	vstack_load_store 0, 2, er4, 4, fp, 14
 __vstack_store_er6_fp:
-	vstack_store_ern er6, 6, fp, 14
+	vstack_load_store 0, 2, er6, 6, fp, 14
 __vstack_store_er8_fp:
-	vstack_store_ern er8, 8, fp, 14
+	vstack_load_store 0, 2, er10, 8, fp, 14
 __vstack_store_er10_fp:
-	vstack_store_ern er10, 10, fp, 14
+	vstack_load_store 0, 2, er10, 10, fp, 14
 __vstack_store_er12_fp:
-	vstack_store_ern er12, 12, fp, 14
+	vstack_load_store 0, 2, er12, 12, fp, 14
 __vstack_store_er14_fp:
-	vstack_store_ern er14, 14, fp, 14
+	vstack_load_store 0, 2, er14, 14, fp, 14
 
 ;helper function for `ADD SP, #imm16` instruction
 __vstack_vsp_addition:
