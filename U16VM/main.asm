@@ -52,41 +52,37 @@ VECSR1	EQU	09030h
 VECSR2	EQU	09040h
 VECSR3	EQU	09050h
 
-VECPUSTAT1	EQU	09032h
-VECPUSTAT2	EQU	09042h
-VECPUSTAT3	EQU	09052h
-
 VESSR1	EQU 09032h
 VESSR2	EQU 09042h
 VESSR3	EQU 09052h
 
-VEPSWBAK1	EQU	09034h
-VEPSWBAK2	EQU	09044h
-VEPSWBAK3	EQU	09054h
+VPELR1	EQU	09034h
+VPELR2	EQU	09044h
+VPELR3	EQU	09054h
 
-VEVMFLAGS1	EQU	09035h
-VEVMFLAGS2	EQU	09045h
-VEVMFLAGS3	EQU	09055h
+VPECSR1	EQU	09036h
+VPECSR2	EQU	09046h
+VPECSR3	EQU	09056h
 
-VESP1	EQU	09036h
-VESP2	EQU	09046h
-VESP3	EQU	09056h
+VEPSW1	EQU	09037h
+VEPSW2	EQU	09047h
+VEPSW3	EQU	09057h
 
-VEXR81	EQU	09038h
-VEXR82	EQU	09048h
-VEXR83	EQU	09058h
+VEPSWBAK1	EQU	09038h
+VEPSWBAK2	EQU	09048h
+VEPSWBAK3	EQU	09058h
 
-VPELR1	EQU	0903Ch
-VPELR2	EQU	0904Ch
-VPELR3	EQU	0905Ch
+VEVMFLAGS1	EQU	09039h
+VEVMFLAGS2	EQU	09049h
+VEVMFLAGS3	EQU	09059h
 
-VPECSR1	EQU	0903Eh
-VPECSR2	EQU	0904Eh
-VPECSR3	EQU	0905Eh
+VESP1	EQU	0903Ah
+VESP2	EQU	0904Ah
+VESP3	EQU	0905Ah
 
-VEPSW1	EQU	0903Fh
-VEPSW2	EQU	0904Fh
-VEPSW3	EQU	0905Fh
+VEXR81	EQU	0903Ch
+VEXR82	EQU	0904Ch
+VEXR83	EQU	0905Ch
 
 ;register backup for interrupt handlers
 TMP	EQU	09060h
@@ -96,6 +92,9 @@ LOCAL_STACK	EQU	09100h
 
 ;Interrupt vector table
 INT_VTABLE	EQU	09100h
+
+;Bit table indicating if custom ISR is registered for a certain interrupt
+ISR_REGTABLE	EQU	09200h
 
 ;user-registered exception handler
 ;exception handlers should return a boolean value, true if exception handled successfully, false to forward to default handler
@@ -914,6 +913,73 @@ __longptr_fix_psub_ser12:
 __longptr_fix_psub_ser14:
 	pointer_arithmetic_fix 0, er14, 14
 
+;helper function for switching code segment on RTI/POP ECPUSTAT
+;in: er8-target code segment
+__rti_do_csr_switch:
+	st	er8,	VCSR
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	er10,	sp
+	mov	sp,	er8
+	push	lr,ea
+	push	xr0
+	l	er0,	VCSR
+	bl	reload_code_segment
+	pop	xr0
+	pop	ea,lr
+	mov	sp,	er10
+	rt
+
+;Interrupt handlers
+
+__int_save_cpustat macro ELEVEL
+	st	er8,	VEXR81 + (ELEVEL - 1) * 10h
+	st	er10,	VEXR81 + (ELEVEL - 1) * 10h + 2
+	if ELEVEL < 3
+		mov	er8,	elr
+		mov	r10,	ecsr
+		mov	r11,	epsw
+		st	er8,	VPELR1 + (ELEVEL - 1) * 10h
+		st	er10,	VPECSR1 + (ELEVEL - 1) * 10h
+	endif
+	mov	er8,	sp
+	l	er10,	_PSW
+	st	er8,	VESP1 + (ELEVEL - 1) * 10h
+	st	er10,	VEPSWBAK1 + (ELEVEL - 1) * 10h
+	l	er8,	VCSR
+	l	er10,	VSSR
+	st	er8,	VECSR1 + (ELEVEL - 1) * 10h
+	st	er10,	VESSR1 + (ELEVEL - 1) * 10h
+endm
+
+;BRK handler
+_BRK:
+	tb	VMFLAGS.0
+	beq	brk_default_handler
+	__int_save_cpustat 2
+	tb	ISR_REGTABLE.0
+	beq	brk_default_handler_vm
+	mov	r8,	#byte1 INT_VTABLE
+	mov	r9,	#byte2 INT_VTABLE
+	mov	sp,	er8
+	b	_nop
+
+brk_default_handler:
+brk_default_handler_vm:
+
+;NMICE handler
+_NMICE:
+	__int_save_cpustat 3
+	tb	ISR_REGTABLE.1
+	beq	nmice_default_handler
+	mov	r8,	#byte1 (INT_VTABLE + 6)
+	mov	r9,	#byte2 (INT_VTABLE + 6)
+	mov	sp,	er8
+	b	_nop
+
+;Dynamically link to debugger if registered
+nmice_default_handler:
+
 ;NMI handler
 _NMI:
 	tb	VMFLAGS.0
@@ -923,32 +989,14 @@ _NMI:
 	rti
 
 handle_nmi:
-;save cpu state
-	st	er8,	VEXR82
-	st	er10,	VEXR82 + 2
-	mov	er8,	elr
-	mov	r10,	ecsr
-	mov	r11,	epsw
-	st	er8,	VPELR2
-	st	r10,	VPECSR2
-	st	r11,	VEPSW2
-	mov	er8,	sp
-	l	er10,	_PSW
-	st	er8,	VESP2
-	st	er10,	VEPSWBAK2
-	l	er8,	VCSR
-	l	er10,	VSSR
-	st	er8,	VECSR2
-	st	er10,	VESSR2
-	l	er8,	INT_VTABLE + 8
+	__int_save_cpustat 2
+	tb	ISR_REGTABLE.2
 	beq	nmi_default_handler_vm
-
-	mov	r8,	#byte1 (INT_VTABLE + 8)
-	mov	r9,	#byte2 (INT_VTABLE + 8)
-	swi	#1
+	mov	r8,	#byte1 (INT_VTABLE + 0Ch)
+	mov	r9,	#byte2 (INT_VTABLE + 0Ch)
+	mov	sp,	er8
 	b	_nop
 
-;fallback to default handler
 nmi_default_handler_vm:
 	mov	r8,	#5Ah
 wdt_clear_retry_vm:
@@ -972,6 +1020,28 @@ wdt_clear_retry:
 	st	r0,	WDTCON
 	pop	r0
 	rti
+
+;Hardware MI handler
+_MI macro intidx, mi_default_handler, mi_default_handler_vm
+	tb	VMFLAGS.0
+	beq	mi_default_handler
+	__int_save_cpustat 1
+	tb	(ISR_REGTABLE + intidx >> 3).(intidx & 7)
+	beq	mi_default_handler_vm
+	mov	r8,	#byte1 (INT_VTABLE + intidx * 6)
+	mov	r9,	#byte2 (INT_VTABLE + intidx * 6)
+	mov	sp,	er8
+	b	_nop
+endm
+
+;User-reserved SWI handler
+_SWI macro intidx
+	__int_save_cpustat 1
+	mov	r8,	#byte1 (INT_VTABLE + intidx * 6)
+	mov	r9,	#byte2 (INT_VTABLE + intidx * 6)
+	mov	sp,	er8
+	b	_nop
+endm
 
 ;Kernel-reserved software interrupt handlers
 
@@ -2644,6 +2714,47 @@ _rt:
 	swi	#1
 	fetch
 
+;RTI
+_rti:
+	mov	r10,	psw
+	and	r10,	#3
+	beq	_rt
+	mov	r8,	#byte1 (VECSR1 - 10h)
+	mov	r9,	#byte2 (VECSR1 - 10h)
+	sll	r10,	#4
+	mov	r11,	#0
+	add	er8,	er10
+rti_restore_cpustat:
+	mov	psw,	#1
+	mov	sp,	er8
+	pop	er8
+	l	er10,	VCSR
+	cmp	er8,	er10
+	beq	rti_skip_csr_switch
+	__EnterNMIBlkSection
+	bl	__rti_do_csr_switch
+	__LeaveNMIBlkSection
+rti_skip_csr_switch:
+	pop	er8
+	swi	#2
+	pop	xr8
+	mov	elr,	er8
+	mov	ecsr,	r9
+	mov	epsw,	r10
+	pop	xr8
+	st	er8,	_PSW
+	mov	er8,	sp
+	mov	sp,	er10
+	l	er10,	02h[er8]
+	l	er8,	[er8]
+	rti
+
+;RTICE
+_rtice:
+	mov	r8,	#byte1 VECSR3
+	mov	r9,	#byte2 VECSR3
+	bal	rti_restore_cpustat
+
 ;SYSCALL Cadr
 ;calls native function in the ROM
 _syscall:
@@ -2718,23 +2829,22 @@ _mov_dsr_imm16:
 	swi	#2
 	fetch
 
-; ;PUSH ELR
-; _push_elr:
-; 	mov	er10,	sp
-; 	mov	sp,	er8
-; 	push	elr
-; 	mov	er8,	sp
-; 	mov	sp,	er10
-; 	fetch
+;PUSH ECPUSTAT
+_push_ecpustat:
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
+	add	er8,	#-10h
+	st	er8,	VSP
+	and	r10,	#3
+	beq	push_ecpustat_noexcept_fallback
+	mov	r11,	#0
+	
+	l	r10,	_PSW
+	mov	psw,	r10
+	fetch
 
-; ;PUSH EPSW
-; _push_epsw:
-; 	mov	er10,	sp
-; 	mov	sp,	er8
-; 	push	epsw
-; 	mov	er8,	sp
-; 	mov	sp,	er10
-; 	fetch
+push_ecpustat_noexcept_fallback:
 
 ;PUSH LR
 _push_lr:
@@ -3032,3 +3142,15 @@ rept 60
 	fetch
 	idx0 set idx0 + 1
 endm
+
+;ICESWI
+_ICESWI:
+	mov	r11,	psw
+	mov	r8,	#byte1 offset iceswi_retn
+	mov	r9,	#byte2 offset iceswi_retn
+	mov	r10,	#seg iceswi_retn
+	st	er8,	VPELR3
+	st	er10,	VPECSR3
+	iceswi
+iceswi_retn:
+	fetch
