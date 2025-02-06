@@ -17,7 +17,8 @@ model	large
 ;implement malloc and free to handle virtual memory allocating. malloc should return a 32-bit pointer pointing to the virtual memory. Do not use malloc for accessing reserved local ram.
 ;When doing data transfer between data segments, use local ram as buffer. Do not directly transfer between different segments since memory access to a different data segment will reload the whole virtual memory segment from external storage.
 ;it's recommended to cache frequently accessed data in local ram segment.
-;Allow user programs to register interrupt handlers. Emulate VECSR, VEPSW and VECPUSTAT (including physical ECSR:ELR, XR8, SP, VSSR, psw backup _PSW and VMFLAGS) in internal ram.
+;Allow user programs to register interrupt handlers. Emulate interrupt backup registers for 3 different exception levels (including physical ECSR:ELR, XR8, SP, VCSR, VSSR, psw backup _PSW and VMFLAGS) in internal ram.
+;Specially, physical ECSR1:ELR1 and EPSW1 will be saved on a non-maskable interrupt.
 
 ;virtual registers
 VXR8	EQU	09000h
@@ -84,8 +85,13 @@ VEXR81	EQU	0903Ch
 VEXR82	EQU	0904Ch
 VEXR83	EQU	0905Ch
 
-;register backup for interrupt handlers
-TMP	EQU	09060h
+;Physical ELR1, ECSR1 and EPSW1 backup for non-maskable interrupts.
+PELR1BAK	EQU	09060h
+PECSR1BAK	EQU	09062h
+PEPSW1BAK	EQU	09063h
+
+;6-byte physical ram reserved for register backup. The values stored here will NOT be saved on interrupts.
+TMP	EQU	09064h
 
 ;stack mamory reserved for external storage access
 LOCAL_STACK	EQU	09100h
@@ -913,22 +919,174 @@ __longptr_fix_psub_ser12:
 __longptr_fix_psub_ser14:
 	pointer_arithmetic_fix 0, er14, 14
 
-;helper function for switching code segment on RTI/POP ECPUSTAT
-;in: er8-target code segment
-__rti_do_csr_switch:
+;shared handler for RTI/RTICE/POP CPUSTAT virtual instructions
+__rti_restore_cpustat:
+	mov	sp,	er8
+	pop	er8
+	l	er10,	VCSR
+	cmp	er8,	er10
+	beq	rti_skip_csr_switch
 	st	er8,	VCSR
 	mov	r8,	#byte1 LOCAL_STACK
 	mov	r9,	#byte2 LOCAL_STACK
 	mov	er10,	sp
 	mov	sp,	er8
-	push	lr,ea
+	push	ea
 	push	xr0
 	l	er0,	VCSR
 	bl	reload_code_segment
 	pop	xr0
-	pop	ea,lr
+	pop	ea
 	mov	sp,	er10
-	rt
+rti_skip_csr_switch:
+	pop	er8
+	l	er10,	VSSR
+	cmp	er8,	er10
+	beq	rti_skip_ssr_switch
+	st	er8,	VSSR
+	mov	er8,	sp
+	st	er8,	TMP
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	sp,	er8
+	push	ea
+	push	xr0
+	mov	er0,	er10
+	l	er2,	VSSR
+	l	er8,	TMP
+	bl	reload_stack_segment
+	pop	xr0
+	pop	ea
+	mov	sp,	er8
+rti_skip_ssr_switch:
+	pop	xr8
+	mov	elr,	er8
+	mov	ecsr,	r10
+	mov	epsw,	r11
+	pop	xr8
+	st	er8,	_PSW
+	mov	er8,	sp
+	mov	sp,	er10
+	l	er10,	02h[er8]
+	l	er8,	[er8]
+	__LeaveNMIBlkSection
+	rti
+
+;PUSH ECPUSTAT instruction handler
+__vstack_push_ecpustat:
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
+	and	r10,	#3
+	beq	push_ecpustat_noexcept_fallback
+	sll	r10,	#4
+	mov	r11,	#0
+	__EnterIntBlkSection
+	mov	er8,	sp
+	st	er8,	TMP
+	l	er8,	VSP
+	mov	sp,	er8
+	l	er8,	(VEXR81 - 0Eh)[er10]
+	push	er8
+	l	er8,	(VEXR81 - 10h)[er10]
+	push	er8
+	l	er8,	(VESP1 - 10h)[er10]
+	push	er8
+	l	er8,	(VEPSWBAK1 - 10h)[er10]
+	push	er8
+	l	er8,	(VPECSR1 - 10h)[er10]
+	push	er8
+	l	er8,	(VPELR1 - 10h)[er10]
+	push	er8
+	l	er8,	(VESSR1 - 10h)[er10]
+	push	er8
+	l	er8,	(VECSR1 - 10h)[er10]
+	push	er8
+	mov	er8,	sp
+	st	er8,	VSP
+	l	er8,	TMP
+	mov	sp,	er8
+	__LeaveNMIBlkSection
+	l	r10,	_PSW
+	mov	psw,	r10
+	b	_nop
+
+push_ecpustat_noexcept_fallback:
+	mov	er10,	sp
+	mov	sp,	er8
+	add	er8,	#-10h
+	st	er8,	VSP
+	mov	er8,	#0
+	push	er8
+	push	er8
+	l	er8,	VLR
+	push	er8
+	l	er8,	_PSW
+	push	er8
+	mov	r9,	r8
+	mov	r8,	#seg _nop
+	push	er8
+	mov	er8,	#offset _nop
+	push	er8
+	l	er8,	VSSR
+	push	er8
+	l	er8,	VLCSR
+	push	er8
+	mov	sp,	er10
+	l	r10,	_PSW
+	mov	psw,	r10
+	b	_nop
+
+;POP ECPUSTAT instruction handler
+__vstack_pop_ecpustat:
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
+	and	r10,	#3
+	beq	pop_ecpustat_noexcept_fallback
+	sll	r10,	#4
+	mov	r11,	#0
+	__EnterIntBlkSection
+	mov	er8,	sp
+	st	er8,	TMP
+	l	er8,	VSP
+	mov	sp,	er8
+	pop	er8
+	st	er8,	(VECSR1 - 10h)[er10]
+	pop	er8
+	st	er8,	(VESSR1 - 10h)[er10]
+	pop	er8
+	st	er8,	(VPELR1 - 10h)[er10]
+	pop	er8
+	st	er8,	(VPECSR1 - 10h)[er10]
+	pop	er8
+	st	er8,	(VEPSWBAK1 - 10h)[er10]
+	pop	er8
+	st	er8,	(VESP1 - 10h)[er10]
+	pop	er8
+	st	er8,	(VEXR81 - 10h)[er10]
+	pop	er8
+	st	er8,	(VEXR81 - 0Eh)[er10]
+	mov	er8,	sp
+	st	er8,	VSP
+	l	er8,	TMP
+	mov	sp,	er8
+	__LeaveNMIBlkSection
+	l	r10,	_PSW
+	mov	psw,	r10
+	b	_nop
+
+pop_ecpustat_noexcept_fallback:
+	l	er10,	[er8]
+	st	er10,	VLCSR
+	add	er8,	#0Ah
+	l	er10,	[er8]
+	st	er10,	VLR
+	add	er8,	#6
+	st	er8,	VSP
+	l	r10,	_PSW
+	mov	psw,	r10
+	b	_nop
 
 ;Interrupt handlers
 
@@ -950,6 +1108,16 @@ __int_save_cpustat macro ELEVEL
 	l	er10,	VSSR
 	st	er8,	VECSR1 + (ELEVEL - 1) * 10h
 	st	er10,	VESSR1 + (ELEVEL - 1) * 10h
+	if ELEVEL == 2
+		mov	psw,	#1
+		nop
+		mov	er8,	elr
+		mov	r10,	ecsr
+		mov	r11,	epsw
+		mov	psw,	#2
+		st	er8,	PELR1BAK
+		st	er10,	PECSR1BAK
+	endif
 endm
 
 ;BRK handler
@@ -1073,26 +1241,25 @@ default_handler:
 ;Change current code segment
 ;in: er8-pointer to target virtual address
 _SWI_1:
-	mov	r10,	#byte1 LOCAL_STACK
-	mov	r11,	#byte2 LOCAL_STACK
-	mov	sp,	er10
-	push	ea
-	push	xr0
-	lea	[er8]
-	l	xr8,	[ea]
-	l	er0,	VCSR
-	cmp	er10,	er0
+	mov	sp,	er8
+	l	er10,	02h[er8]
+	l	er8,	VCSR
+	cmp	er10,	er8
+	pop	er8
 	bne	do_csr_switch
-	pop	xr0
-	pop	ea
 	mov	sp,	er8
 	rti
 
 do_csr_switch:
 	__EnterNMIBlkSection
 	st	er10,	VCSR
+	mov	r10,	#byte1 LOCAL_STACK
+	mov	r11,	#byte2 LOCAL_STACK
+	mov	sp,	er10
+	push	ea
+	push	xr0
 	;calls a function to load the target code segment from external storage to allocated region of the internal ram.
-	mov	er0,	er10
+	l	er0,	VCSR
 	bl	reload_code_segment
 	pop	xr0
 	pop	ea
@@ -1517,24 +1684,24 @@ insn_rn_imm8 xor
 ;OV: This bit goes to 1 if the operation produces an overflow in segment register and to 0 otherwise.
 
 ;PADD SERn
-b __longptr_fix_padd_ser0
-b __longptr_fix_padd_ser2
-b __longptr_fix_padd_ser4
-b __longptr_fix_padd_ser6
-b __longptr_fix_padd_ser8
-b __longptr_fix_padd_ser10
-b __longptr_fix_padd_ser12
-b __longptr_fix_padd_ser14
+b	__longptr_fix_padd_ser0
+b	__longptr_fix_padd_ser2
+b	__longptr_fix_padd_ser4
+b	__longptr_fix_padd_ser6
+b	__longptr_fix_padd_ser8
+b	__longptr_fix_padd_ser10
+b	__longptr_fix_padd_ser12
+b	__longptr_fix_padd_ser14
 
 ;PSUB SERn
-b __longptr_fix_psub_ser0
-b __longptr_fix_psub_ser2
-b __longptr_fix_psub_ser4
-b __longptr_fix_psub_ser6
-b __longptr_fix_psub_ser8
-b __longptr_fix_psub_ser10
-b __longptr_fix_psub_ser12
-b __longptr_fix_psub_ser14
+b	__longptr_fix_psub_ser0
+b	__longptr_fix_psub_ser2
+b	__longptr_fix_psub_ser4
+b	__longptr_fix_psub_ser6
+b	__longptr_fix_psub_ser8
+b	__longptr_fix_psub_ser10
+b	__longptr_fix_psub_ser12
+b	__longptr_fix_psub_ser14
 
 ;ADD ERn, #imm16
 idx0 set 0
@@ -1563,7 +1730,7 @@ rept 8
 endm
 
 ;ADD SP, #imm16
-b __vstack_vsp_addition
+b	__vstack_vsp_addition
 
 ;DEC [EA]
 _dec_ea:
@@ -2724,35 +2891,24 @@ _rti:
 	sll	r10,	#4
 	mov	r11,	#0
 	add	er8,	er10
-rti_restore_cpustat:
 	mov	psw,	#1
-	mov	sp,	er8
-	pop	er8
-	l	er10,	VCSR
-	cmp	er8,	er10
-	beq	rti_skip_csr_switch
+	cmp	r10,	#20h
+	bne	rti_restore_cpustat
+	l	er10,	PELR1BAK
+	mov	elr,	er10
+	l	er10,	PECSR1BAK
+	mov	ecsr,	r10
+	mov	epsw,	r11
+	mov	psw,	#2
+rti_restore_cpustat:
 	__EnterNMIBlkSection
-	bl	__rti_do_csr_switch
-	__LeaveNMIBlkSection
-rti_skip_csr_switch:
-	pop	er8
-	swi	#2
-	pop	xr8
-	mov	elr,	er8
-	mov	ecsr,	r9
-	mov	epsw,	r10
-	pop	xr8
-	st	er8,	_PSW
-	mov	er8,	sp
-	mov	sp,	er10
-	l	er10,	02h[er8]
-	l	er8,	[er8]
-	rti
+	b	__rti_restore_cpustat
 
 ;RTICE
 _rtice:
 	mov	r8,	#byte1 VECSR3
 	mov	r9,	#byte2 VECSR3
+	mov	psw,	#1
 	bal	rti_restore_cpustat
 
 ;SYSCALL Cadr
@@ -2830,21 +2986,36 @@ _mov_dsr_imm16:
 	fetch
 
 ;PUSH ECPUSTAT
-_push_ecpustat:
+b	__vstack_push_ecpustat
+
+;PUSH PECPUSTAT
+_push_pecpustat:
 	swi	#3
 	mov	r10,	psw
 	st	r10,	_PSW
-	add	er8,	#-10h
+	add	er8,	#-4
 	st	er8,	VSP
-	and	r10,	#3
-	beq	push_ecpustat_noexcept_fallback
-	mov	r11,	#0
-	
+	l	er10,	PELR1BAK
+	st	er10,	[er8]
+	add	er8,	#2
+	l	er10,	PECSR1BAK
+	st	er10,	[er8]
 	l	r10,	_PSW
 	mov	psw,	r10
 	fetch
 
-push_ecpustat_noexcept_fallback:
+;PUSH VDSR
+_push_vdsr:
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
+	add	er8,	#-2
+	st	er8,	VSP
+	l	er10,	VDSR
+	st	er10,	[er8]
+	l	r10,	_PSW
+	mov	psw,	r10
+	fetch
 
 ;PUSH LR
 _push_lr:
@@ -2909,6 +3080,35 @@ _pop_lr:
 	mov	sp,	er10
 	fetch
 
+;POP VDSR
+_pop_vdsr:
+	swi	#3
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	er8
+	swi	#2
+	mov	er8,	sp
+	mov	sp,	er10
+	st	er8,	VSP
+	fetch
+
+;POP PECPUSTAT
+_pop_pecpustat:
+	swi	#3
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	er8
+	st	er8,	PELR1BAK
+	pop	er8
+	st	er8,	PECSR1BAK
+	mov	er8,	sp
+	st	er8,	VSP
+	mov	sp,	er10
+	fetch
+
+;POP ECPUSTAT
+b	__vstack_pop_ecpustat
+
 ;POP PC
 _pop_pc:
 	swi	#3
@@ -2919,6 +3119,16 @@ _pop_pc:
 	st	er8,	VSP
 	mov	psw,	r10
 	fetch
+
+;POP CPUSTAT
+_pop_cpustat:
+	swi	#3
+	mov	psw,	#1
+	__EnterNMIBlkSection
+	mov	er10,	er8
+	add	er10,	#10h
+	st	er10,	VSP
+	b	__rti_restore_cpustat
 
 ;PUSH Rn
 idx0 set 0
