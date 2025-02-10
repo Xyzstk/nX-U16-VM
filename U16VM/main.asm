@@ -11,7 +11,7 @@ model	large
 ;use 32-bit virtual ram pointer, where low 16 bits represents the physical address in the virtual memory segment of the internal ram. Virtual memory access should be prefixed to identify data segment. Local ram accessing should not be prefixed since segment switching is handled in prefix.
 ;use 32-bit virtual stack pointer, where low 16 bits represents the physical address in the stack segment of the internal ram. 8 bytes of ram should be reserved at the beginning and end of the stack segment to avoid overflow/underflow.
 ;use 32-bit instruction pointer, where low 16 bits point to the physical address in the code segment of the internal ram. Conditional branch and register calls only allows jumping to the same segment. Use long jump to switch segment.
-;To make memory addressing easier, MSB of 16-bit form data segment register is fixed to 0, while stack segment register fixed to 1.
+;MSB of 16-bit form data segment register is fixed to 0, while stack segment register fixed to 1. They share the addressable range for consideration that a function taking a memory pointer might not know if it's pointing to data segment or stack segment.
 ;use SWI0 to handle exceptions. SWI1 for switching code segment, SWI2 for switching data/stack segment on load/store and SWI3 for switching stack segment on push/pop.
 ;`L/ST Rn/ERn, Disp16[BP/FP]` instructions are implemented for accessing virtual stack memory without having to switch stack segment. 
 ;implement malloc and free to handle virtual memory allocating. malloc should return a 32-bit pointer pointing to the virtual memory. Do not use malloc for accessing reserved local ram.
@@ -90,6 +90,10 @@ PELR1BAK	EQU	09060h
 PECSR1BAK	EQU	09062h
 PEPSW1BAK	EQU	09063h
 
+;Pointer to a struct identifying the current executing file and it's backup on extcall.
+PROCHANDLE	EQU	09064h
+LPROCHANDLE	EQU	09068h
+
 ;6-byte physical ram reserved for register backup. The values stored here will NOT be saved on interrupts.
 TMP	EQU	09064h
 
@@ -115,6 +119,9 @@ extrn code	:	vmem_byte_store
 extrn code	:	vmem_word_store
 extrn code	:	vmem_byte_load
 extrn code	:	vmem_word_load
+extrn code	:	prog_file_load
+extrn code	:	prog_file_init
+extrn code	:	prog_file_uninit
 
 extrn number	:	EXCEPTION_STACK_OVERFLOW
 extrn number	:	EXCEPTION_STACK_UNDERFLOW
@@ -139,6 +146,9 @@ endm
 ;helper function to call a pointer in stack
 __stack_call:
 	pop	pc
+
+__rti:
+	rti
 
 ;BP/FP addressing instructions are implemented here in case handler segment grows too large
 __vstack_load_store$overflow:
@@ -1087,6 +1097,94 @@ pop_ecpustat_noexcept_fallback:
 	l	r10,	_PSW
 	mov	psw,	r10
 	b	_nop
+
+;EXTCALL instruction handler
+__extcall:
+	mov	r8,	psw
+	st	r8,	_PSW
+	__EnterIntBlkSection
+	mov	er10,	sp
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	sp,	er8
+	push	ea
+	push	xr0
+	l	er8,	VCSR
+	st	er8,	VLCSR
+	lea	[er10]
+	add	er10,	#6
+	st	er10,	VLR
+	l	er0,	[ea+]
+	l	xr8,	[ea]
+	push	er8
+	st	er10,	VCSR
+	bl	prog_file_load
+	lea	PROCHANDLE
+	l	xr8,	[ea]
+	st	xr0,	[ea+]
+	st	xr8,	[ea]
+	bl	prog_file_init
+	l	er0,	VCSR
+	bl	reload_code_segment
+	pop	er8
+	pop	xr0
+	pop	ea
+	mov	sp,	er8
+	__LeaveNMIBlkSection
+	l	r8,	_PSW
+	mov	psw,	r8
+	b	_nop
+
+;RTEXT instruction handler
+__rtext:
+	mov	r8,	psw
+	st	r8,	_PSW
+	__EnterIntBlkSection
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	mov	sp,	er8
+	push	ea
+	push	xr0
+	lea	PROCHANDLE
+	l	xr0,	[ea+]
+	l	xr8,	[ea]
+	lea	PROCHANDLE
+	st	xr8,	[ea]
+	beq	vmexit
+	bl	prog_file_uninit
+	mov	er0,	er8
+	mov	er2,	er10
+	bl	prog_file_init
+	l	er0,	VLCSR
+	st	er0,	VCSR
+	bl	reload_code_segment
+	pop	xr0
+	pop	ea
+	l	er8,	VLR
+	mov	sp,	er8
+	__LeaveNMIBlkSection
+	l	r8,	_PSW
+	mov	psw,	r8
+	b	_nop
+
+vmexit:
+	bl	prog_file_uninit
+	pop	xr0
+	pop	ea
+	mov	psw,	#1
+	l	r8,	_PSW
+	mov	epsw,	r8
+	l	er8,	VLR
+	l	r10,	VLCSR
+	mov	elr,	er8
+	mov	ecsr,	r10
+	l	er8,	VSP
+	mov	sp,	er8
+	l	er8,	VER8
+	l	er10,	VER10
+	rb	VMFLAGS.0
+	__LeaveNMIBlkSection
+	rti
 
 ;Interrupt handlers
 
@@ -2875,6 +2973,7 @@ endm
 ;RT
 _rt:
 	mov	r10,	psw
+rti_rt_fallback:
 	mov	r8,	#byte1 VLR
 	mov	r9,	#byte2 VLR
 	mov	psw,	r10
@@ -2884,15 +2983,12 @@ _rt:
 ;RTI
 _rti:
 	mov	r10,	psw
-	and	r10,	#3
-	beq	_rt
-	mov	r8,	#byte1 (VECSR1 - 10h)
-	mov	r9,	#byte2 (VECSR1 - 10h)
-	sll	r10,	#4
-	mov	r11,	#0
-	add	er8,	er10
+	mov	r8,	r10
+	and	r8,	#3
+	beq	rti_rt_fallback
 	mov	psw,	#1
-	cmp	r10,	#20h
+	__EnterNMIBlkSection
+	cmp	r8,	#2
 	bne	rti_restore_cpustat
 	l	er10,	PELR1BAK
 	mov	elr,	er10
@@ -2901,57 +2997,90 @@ _rti:
 	mov	epsw,	r11
 	mov	psw,	#2
 rti_restore_cpustat:
-	__EnterNMIBlkSection
+	sll	r8,	#4
+	add	r8,	#byte1 (VECSR1 - 10h)
+	mov	r9,	#byte2 (VECSR1 - 10h)
 	b	__rti_restore_cpustat
 
 ;RTICE
 _rtice:
+	mov	psw,	#1
+	__EnterNMIBlkSection
 	mov	r8,	#byte1 VECSR3
 	mov	r9,	#byte2 VECSR3
-	mov	psw,	#1
-	bal	rti_restore_cpustat
+	b	__rti_restore_cpustat
 
 ;SYSCALL Cadr
-;calls native function in the ROM
+;Safely calls an arbitrary address in the ROM. Use when calling functions that does NOT follow ordinary calling conventions.
 _syscall:
 	mov	r8,	psw
 	st	r8,	_PSW
+	mov	psw,	#1
 	__EnterNMIBlkSection
-	l	er8,	VCSR
-	st	er8,	VLCSR
+	rb	r8.3
+	mov	epsw,	r8
+	pop	xr8
+	mov	elr,	er8
+	mov	ecsr,	r10
 	mov	er8,	sp
-	add	er8,	#4
+	l	er10,	VCSR
 	st	er8,	VLR
+	st	er10,	VLCSR
 	l	er8,	VSP
-	mov	er10,	sp
 	mov	sp,	er8
-	l	er8,	[er10]
-	l	er10,	02h[er10]
-	push	xr8
-	l	r8,	_PSW
-	push	r8
 	l	er8,	VER8
 	l	er10,	VER10
-	pop	psw
-	di
-	bl	__stack_call
+	bl	__rti
 	st	er8,	VER8
 	st	er10,	VER10
+	mov	er8,	sp
+	st	er8,	VSP
 	mov	r10,	psw
+	l	r8,	_PSW
+	and	r8,	#8
+	or	r10,	r8
 	__LeaveNMIBlkSection
-	mov	r8,	#byte1 VLR
-	mov	r9,	#byte2 VLR
-	tb	_PSW.3
-	bne	_syscall_retn_ei
-	mov	psw,	r10
-	swi	#1
+	bal	rti_rt_fallback
+
+;FAST_SYSCALL_VSTACK Cadr
+;Calls function in the ROM. Use for functions that follow U16 calling conventions.
+_fast_syscall_vstack:
+	mov	r8,	psw
+	st	r8,	_PSW
+	mov	psw,	#1
+	__EnterNMIBlkSection
+	rb	r8.3
+	mov	epsw,	r8
+	pop	xr8
+	mov	elr,	er8
+	mov	ecsr,	r10
+	mov	er10,	sp
+	l	er8,	VSP
+do_syscall:
+	mov	sp,	er8
+	bl	__rti
+	mov	sp,	er10
+	__LeaveNMIBlkSection
+	l	r8,	_PSW
+	mov	psw,	r8
 	fetch
 
-_syscall_retn_ei:
-	mov	psw,	r10
-	swi	#1
-	ei
-	fetch
+;FAST_SYSCALL_PSTACK Cadr
+;Calls function in the ROM at reserved LOCAL_STACK. Use for functions that do NOT accept stack arguments.
+_fast_syscall_pstack:
+	mov	r8,	psw
+	st	r8,	_PSW
+	mov	psw,	#1
+	__EnterNMIBlkSection
+	rb	r8.3
+	mov	epsw,	r8
+	pop	xr8
+	mov	elr,	er8
+	mov	ecsr,	r10
+	mov	er10,	sp
+	mov	r8,	#byte1 LOCAL_STACK
+	mov	r9,	#byte2 LOCAL_STACK
+	bal	do_syscall
 
 ;VDSR/VSSR <- ERn
 idx0 set 0
@@ -3033,6 +3162,22 @@ _push_lr:
 	mov	psw,	r10
 	fetch
 
+;PUSH LPROCHANDLE
+_push_lprochandle:
+	swi	#3
+	mov	r10,	psw
+	st	r10,	_PSW
+	add	er8,	#-4
+	st	er8,	VSP
+	l	er10,	LPROCHANDLE
+	st	er10,	[er8]
+	add	er8,	#2
+	l	er10,	LPROCHANDLE + 2
+	st	er10,	[er8]
+	l	r10,	_PSW
+	mov	psw,	r10
+	fetch
+
 ;PUSH EA
 _push_ea:
 	swi	#3
@@ -3064,6 +3209,20 @@ _pop_psw:
 	add	er8,	#2
 	st	er8,	VSP
 	mov	psw,	r10
+	fetch
+
+;POP LPROCHANDLE
+_pop_lprochandle:
+	swi	#3
+	mov	er10,	sp
+	mov	sp,	er8
+	pop	er8
+	st	er8,	LPROCHANDLE
+	pop	er8
+	st	er8,	LPROCHANDLE + 2
+	mov	er8,	sp
+	st	er8,	VSP
+	mov	sp,	er10
 	fetch
 
 ;POP LR
@@ -3364,3 +3523,12 @@ _ICESWI:
 	iceswi
 iceswi_retn:
 	fetch
+
+;EXTCALL FILE:Cadr
+;Loads an executable file and calls an arbitrary address. Return address will be saved to virtual LCSR:LR, current process handle will be saved to LPROCHANDLE.
+;Syntax: EXTCALL (near ptr TARGET_FILE_NAME) Cadr
+b	__extcall
+
+;RTEXT
+;Returns from an external call. If LPROCHANDLE is NULL, returns to native execution by virtual LCSR:LR.
+b	__rtext
